@@ -1,0 +1,16 @@
+.venv
+__pycache__
+*.pyc
+.env
+LinkedInProfile
+chromeprofile
+wuzzufprofile
+login_retries.json
+*.db
+markup/*/snapshots/
+
+# legacy pre-refactor artifacts
+example.html
+login.html
+linkedin_jobs.json
+linkedin_jobs.db

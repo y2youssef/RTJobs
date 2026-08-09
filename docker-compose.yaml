@@ -1,0 +1,38 @@
+services:
+  scraper:
+    build: .
+    container_name: rtjobs
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      - HEADLESS=false
+      - DATA_DIR=/data
+      - KILL_CHROME_ON_START=true
+    volumes:
+      - chrome_profile:/app/chromeprofile
+      - wuzzuf_profile:/app/wuzzufprofile
+      - scraper_data:/data
+      - ./markup:/data/markup
+    ports:
+      - "127.0.0.1:9222:9222"
+    command: ["xvfb-run", "-a", "python", "main.py"]
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-run.scraper.schedule: "*/6 * * * *"
+      ofelia.job-run.scraper.container: "rtjobs"
+    restart: "no"
+
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: ofelia
+    depends_on:
+      - scraper
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    command: daemon --docker
+
+volumes:
+  chrome_profile:
+  wuzzuf_profile:
+  scraper_data:

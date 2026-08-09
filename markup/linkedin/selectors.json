@@ -1,0 +1,24 @@
+{
+  "login": {
+    "username": "input[autocomplete*='username']:visible",
+    "password": "input[autocomplete='current-password']:visible",
+    "error": "#error-for-password, #error-for-username, .alert-content, #error",
+    "sign_in_with_email": "Sign in with email",
+    "continue": "Continue"
+  },
+  "search": {
+    "job_card": "li.scaffold-layout__list-item",
+    "job_id_attr": "data-occludable-job-id",
+    "results_list": ".jobs-search-results-list, .scaffold-layout__list",
+    "detail_panel": "#job-details",
+    "login_redirect": "input#username"
+  },
+  "job_detail": {
+    "title": "h1.t-24.t-bold",
+    "company": ".job-details-jobs-unified-top-card__company-name a",
+    "posted_at": "span.tvm__text--positive strong",
+    "description": "#job-details",
+    "hiring_manager_name": ".jobs-poster__name strong",
+    "hiring_manager_role": ".hirer-card__hirer-information .text-body-small"
+  }
+}

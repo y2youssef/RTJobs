@@ -1,0 +1,10 @@
+{
+  "search": {
+    "job_card": "div.e1v1l3u10",
+    "title_link": "h2 a[href^='/jobs/p/']",
+    "company": "a.css-ipsyv7",
+    "location": "span.css-16x61xq",
+    "posted_at": "div.css-eg55jf",
+    "tags": "div.css-5jhz9n a span"
+  }
+}
