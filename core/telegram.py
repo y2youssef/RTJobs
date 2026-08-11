@@ -26,14 +26,16 @@ def _send(
 ) -> bool:
     for attempt in range(max_attempts):
         try:
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": False,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             resp = requests.post(
                 f"{_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": parse_mode,
-                    "disable_web_page_preview": False,
-                },
+                json=payload,
                 timeout=10,
             )
         except requests.RequestException as e:

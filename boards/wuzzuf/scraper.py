@@ -23,12 +23,7 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import (
-    CHROME_ARGS,
-    HEADLESS,
-    WUZZUF_PROFILE_DIR,
-    WUZZUF_SEARCH_URL,
-)
+from config import WUZZUF_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
 
@@ -255,8 +250,9 @@ def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None) -> tu
 class WuzzufJobSpider(Spider):
     name = "wuzzuf_job_spider"
 
-    def __init__(self, selectors: dict, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
         self.sel = selectors
+        self.cdp_url = cdp_url
         self.seen_ids = db.load_seen_ids("wuzzuf")
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
@@ -266,10 +262,7 @@ class WuzzufJobSpider(Spider):
         manager.add(
             "stealth",
             AsyncStealthySession(
-                headless=HEADLESS,
-                user_data_dir=WUZZUF_PROFILE_DIR,
-                real_chrome=True,
-                extra_flags=CHROME_ARGS,
+                cdp_url=self.cdp_url,
                 solve_cloudflare=True,
                 timeout=120_000,
                 page_setup=patch_no_load_wait,
@@ -344,9 +337,9 @@ class WuzzufJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict) -> list[dict]:
+def scrape(selectors: dict, cdp_url: str) -> list[dict]:
     """Run the spider and return the scraped job dicts."""
-    spider = WuzzufJobSpider(selectors=selectors)
+    spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
     print(

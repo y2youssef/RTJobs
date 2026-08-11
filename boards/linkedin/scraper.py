@@ -14,7 +14,7 @@ from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import CHROME_ARGS, HEADLESS, LINKEDIN_PROFILE_DIR, LINKEDIN_SEARCH_URL
+from config import LINKEDIN_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
 
@@ -52,8 +52,9 @@ def _text(sel: Selector, css: str, separator: str = "") -> str:
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
-    def __init__(self, selectors: dict, *args, **kwargs):
+    def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
         self.sel = selectors
+        self.cdp_url = cdp_url
         self.seen_ids = db.load_seen_ids("linkedin")
 
         self._page_jobs: list[dict] = []
@@ -66,10 +67,7 @@ class LinkedInJobSpider(Spider):
         manager.add(
             "stealth",
             AsyncStealthySession(
-                headless=HEADLESS,
-                user_data_dir=LINKEDIN_PROFILE_DIR,
-                real_chrome=True,
-                extra_flags=CHROME_ARGS,
+                cdp_url=self.cdp_url,
                 disable_resources=True,
                 timeout=60_000,
                 page_setup=patch_no_load_wait,
@@ -174,6 +172,12 @@ class LinkedInJobSpider(Spider):
             mgr_name = _text(sel, d["hiring_manager_name"])
             mgr_role = _text(sel, d["hiring_manager_role"])
 
+            if not company:
+                # Unknown DOM variant (e.g. companies without a logo) —
+                # keep the markup so selectors can be fixed offline.
+                markup.save_snapshot("linkedin", "company_missing", html)
+                print(f"  [warn] Company name not parsed for {job_id}")
+
             print(f"  [ok] {title[:45]}")
             return {
                 "source": "linkedin",
@@ -221,9 +225,9 @@ class LinkedInJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict) -> dict:
+def scrape(selectors: dict, cdp_url: str) -> dict:
     """Run the spider. Returns {'items': [...], 'login_redirect': bool}."""
-    spider = LinkedInJobSpider(selectors=selectors)
+    spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
     print(

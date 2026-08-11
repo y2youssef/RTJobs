@@ -25,6 +25,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# xvfb-run needs xauth at runtime. Kept in its own layer after pip so the
+# slow dependency layer stays cached when this changes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xauth \
+    && rm -rf /var/lib/apt/lists/*
+
 # ---------------------------------------------------------------------------
 # App code
 # ---------------------------------------------------------------------------
@@ -33,6 +39,11 @@ COPY --chown=scraper:scraper . .
 # Create volume mount points and hand them to scraper user BEFORE USER switch.
 RUN mkdir -p /app/chromeprofile /app/wuzzufprofile /data \
     && chown -R scraper:scraper /app/chromeprofile /app/wuzzufprofile /data
+
+# Chrome (crashpad) needs a real, writable HOME; useradd -r doesn't create
+# one, and without it Chrome SIGTRAPs at startup (core dump).
+RUN mkdir -p /home/scraper && chown scraper:scraper /home/scraper
+ENV HOME=/home/scraper
 
 USER scraper
 

@@ -21,13 +21,19 @@ from core.telegram import notify_failure
 
 SIGN_IN_BUTTON = re.compile(r"^(Sign in|تسجيل الدخول)$")
 
-# URL fragments that indicate where we are after login attempts
-_FEED_OK = re.compile(r"(feed|/jobs)")
+# URL fragments that indicate where we are after login attempts.
+# NOTE: /feed only — logged-out guests get redirected to /jobs too, so
+# matching /jobs here would treat a guest session as logged in.
+_FEED_OK = re.compile(r"/feed")
 _CHECKPOINT = re.compile(r"(checkpoint|security_verification|challenge)")
 
 
 def kill_zombie_chrome():
-    """Kill stray chrome processes (container safety net, opt-in)."""
+    """Kill stray chrome processes (container safety net, opt-in).
+
+    Stale profile lock cleanup lives in core.browser.launch_cdp_chrome
+    (clean_locks=True), right before each launch.
+    """
     if not KILL_CHROME_ON_START:
         return
     print("[login] Killing stray Chrome processes...")
@@ -266,8 +272,6 @@ def _verify_routing(page, selectors: dict) -> bool:
 
 def ensure_logged_in(page, selectors: dict) -> bool:
     """Entry point (used as page_action). Returns True if ready to scrape."""
-    kill_zombie_chrome()
-
     if login_state.is_blocked():
         remaining = login_state.remaining_seconds()
         print(f"[login] Blocked for another {remaining}s — skipping run.")

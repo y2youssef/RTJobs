@@ -15,7 +15,7 @@
   },
   "job_detail": {
     "title": "h1.t-24.t-bold",
-    "company": ".job-details-jobs-unified-top-card__company-name a",
+    "company": ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, .topcard__org-name-link",
     "posted_at": "span.tvm__text--positive strong",
     "description": "#job-details",
     "hiring_manager_name": ".jobs-poster__name strong",

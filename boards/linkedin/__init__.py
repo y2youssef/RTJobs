@@ -1,18 +1,34 @@
-"""LinkedIn job board: login + scrape orchestration."""
+"""LinkedIn job board: login + scrape orchestration.
+
+Chrome lifecycle: we launch ONE real Chrome with an HTTP DevTools endpoint
+(CDP) so the session can be attached live from the host (localhost:9222) for
+debugging and manual 2FA/checkpoint solves. The login session and the scrape
+spider both connect to that same Chrome over cdp_url and reuse its default
+(persistent profile) context, so the login cookies carry into the scrape.
+"""
 
 from scrapling.fetchers import StealthySession
 
 from boards.base import JobBoard
 from boards.linkedin import login, scraper
 from config import (
-    CHROME_ARGS,
+    CHROME_DEBUG_PORT,
     HEADLESS,
+    KILL_CHROME_ON_START,
     LINKEDIN_ENABLED,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
 )
 from core import db, login_state, telegram
-from core.browser import patch_no_load_wait
+from core.browser import (
+    cdp_url_for,
+    install_cdp_default_context_patch,
+    launch_cdp_chrome,
+    patch_no_load_wait,
+    stop_chrome,
+)
+
+install_cdp_default_context_patch()
 
 
 class LinkedInBoard(JobBoard):
@@ -38,6 +54,22 @@ class LinkedInBoard(JobBoard):
             login.wipe_profile()
             login_state.reset_retries()
 
+        # Clean up zombie Chrome from crashed runs — must happen BEFORE we
+        # start our own browser (inside a page_action it would kill itself).
+        login.kill_zombie_chrome()
+
+        cdp = cdp_url_for(CHROME_DEBUG_PORT)
+        chrome = launch_cdp_chrome(
+            LINKEDIN_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
+            clean_locks=KILL_CHROME_ON_START,
+        )
+
+        try:
+            return self._run(chrome, cdp, run_id)
+        finally:
+            stop_chrome(chrome)
+
+    def _run(self, chrome, cdp: str, run_id: int) -> int:
         outcome: dict = {"ok": False}
 
         def page_action(page):
@@ -45,10 +77,7 @@ class LinkedInBoard(JobBoard):
 
         try:
             with StealthySession(
-                headless=HEADLESS,
-                real_chrome=True,
-                user_data_dir=LINKEDIN_PROFILE_DIR,
-                extra_flags=CHROME_ARGS,
+                cdp_url=cdp,
                 disable_resources=True,
                 timeout=30_000,
                 page_setup=patch_no_load_wait,
@@ -62,7 +91,7 @@ class LinkedInBoard(JobBoard):
                 db.finish_run(run_id, "login_failed")
                 return 0
 
-            result = scraper.scrape(self.selectors)
+            result = scraper.scrape(self.selectors, cdp_url=cdp)
 
             if result["login_redirect"]:
                 print("[linkedin] Session died mid-scrape — aborting.")
