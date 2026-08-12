@@ -19,7 +19,7 @@ from config import (
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
 )
-from core import db, login_state, telegram
+from core import blocklist, db, login_state, telegram
 from core.browser import (
     cdp_url_for,
     install_cdp_default_context_patch,
@@ -105,9 +105,19 @@ class LinkedInBoard(JobBoard):
                 return 0
 
             new_count = 0
+            blocked_names: list[str] = []
             for job in result["items"]:
+                if blocklist.is_blocked(job["source"], job.get("company") or ""):
+                    db.mark_seen(job["source"], job["external_id"])
+                    blocked_names.append(job.get("company") or "?")
+                    continue
                 db.save_job(job)
                 new_count += 1
+            if blocked_names:
+                print(
+                    f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
+                    f" job(s): {', '.join(sorted(set(blocked_names)))}"
+                )
             print(f"[linkedin] Saved {new_count} new job(s)")
 
             pending = db.get_unnotified(self.name)

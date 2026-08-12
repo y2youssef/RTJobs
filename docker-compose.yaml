@@ -22,6 +22,7 @@ services:
     volumes:
       - chrome_profile:/app/chromeprofile
       - wuzzuf_profile:/app/wuzzufprofile
+      - indeed_profile:/app/indeedprofile
       - scraper_data:/data
       - ./markup:/data/markup
     command: ["xvfb-run", "-a", "python", "main.py"]
@@ -47,4 +48,5 @@ services:
 volumes:
   chrome_profile:
   wuzzuf_profile:
+  indeed_profile:
   scraper_data:

@@ -4,11 +4,13 @@ import sys
 
 from boards.linkedin import LinkedInBoard
 from boards.wuzzuf import WuzzufBoard
+from boards.indeed import IndeedBoard
 from core import db, login_state
 
 BOARDS = [
     LinkedInBoard,
     WuzzufBoard,
+    IndeedBoard,
 ]
 
 

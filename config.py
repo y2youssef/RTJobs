@@ -61,6 +61,19 @@ WUZZUF_PROFILE_DIR = os.path.abspath(
 )
 
 # ---------------------------------------------------------------------------
+# Indeed
+# ---------------------------------------------------------------------------
+# Disabled by default until the board is verified live (see INDEED.md).
+INDEED_ENABLED = os.environ.get("INDEED_ENABLED", "false").lower() == "true"
+INDEED_SEARCH_URL = os.environ.get(
+    "INDEED_SEARCH_URL",
+    "https://eg.indeed.com/jobs?q=&l=%D9%85%D8%B5%D8%B1&radius=100&sort=date",
+)
+INDEED_PROFILE_DIR = os.path.abspath(
+    os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")
+)
+
+# ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]

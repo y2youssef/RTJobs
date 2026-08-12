@@ -5,6 +5,7 @@ __pycache__
 LinkedInProfile
 chromeprofile
 wuzzufprofile
+indeedprofile
 login_retries.json
 *.db
 markup/*/snapshots/

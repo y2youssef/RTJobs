@@ -116,6 +116,22 @@ While a run is in progress:
   optimized versions of real captured markup — use them to re-derive selectors
   offline against the actual DOM.
 
+## 7b. Blocking companies
+
+Edit `markup/blocked_companies.json` (bind-mounted — no rebuild needed):
+
+```json
+{
+  "*":        ["blocks every source"],
+  "linkedin": ["Company Name"],
+  "wuzzuf":   ["Company Name"]
+}
+```
+
+Matching is case-insensitive substring, so `"alignerr"` also blocks
+`"Alignerr Inc."`. Blocked jobs are dropped before saving/notification and
+marked seen so they're never re-scraped.
+
 ## 8. Adding a new board
 
 1. Subclass `JobBoard` in `boards/<site>/` with `name`, `run()` returning the

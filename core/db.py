@@ -122,6 +122,17 @@ def load_seen_ids(source: str) -> set[str]:
         return {r["external_id"] for r in rows}
 
 
+def mark_seen(source: str, external_id: str):
+    """Record an id as seen WITHOUT saving a job — used for jobs we
+    deliberately drop (e.g. blocked companies) so they're never
+    re-scraped, but also never stored or notified."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO seen_ids (source, external_id) VALUES (?, ?)",
+            (source, str(external_id)),
+        )
+
+
 def get_unnotified(source: str | None = None) -> list[sqlite3.Row]:
     with get_db() as conn:
         if source:

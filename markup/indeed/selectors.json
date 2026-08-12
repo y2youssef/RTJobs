@@ -1,0 +1,3 @@
+{
+  "_comment": "Indeed needs no CSS selectors — all data comes from embedded JSON blobs (window.mosaic.providerData for cards, window._initialData / application/ld+json for the viewjob page). See INDEED.md."
+}
