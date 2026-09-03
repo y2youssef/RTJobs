@@ -5,6 +5,7 @@ fetching/stealthy.html): configure_sessions + manager.add, requests routed
 with sid="stealth", and per-request page_action callbacks.
 """
 
+import logging
 import asyncio
 import random
 import re
@@ -17,6 +18,8 @@ from scrapling.spiders import Request, Response, Spider
 from config import LINKEDIN_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
+
+logger = logging.getLogger(__name__)
 
 _MAX_START = 100
 _PAGE_SIZE = 25
@@ -96,7 +99,7 @@ class LinkedInJobSpider(Spider):
                 await pane.evaluate("el => el.scrollTop += 1000")
                 await asyncio.sleep(0.8)
         except Exception as e:
-            print(f"[warn] Card list never appeared: {e}")
+            logger.warning(f"[warn] Card list never appeared: {e}")
             return
 
         cards = await page.locator(self.sel["search"]["job_card"]).all()
@@ -112,7 +115,7 @@ class LinkedInJobSpider(Spider):
             else:
                 jobs_to_scrape_now.append((card, job_id))
 
-        print(
+        logger.info(
             f"[info] Found {len(jobs_to_scrape_now)} new jobs and"
             f" {len(cards) - len(jobs_to_scrape_now)} old jobs on this page."
         )
@@ -125,7 +128,7 @@ class LinkedInJobSpider(Spider):
                 self.seen_ids.add(str(job_id))
 
         if found_at_least_one_duplicate:
-            print("[stop] Duplicate detected on this page — no next page.")
+            logger.info("[stop] Duplicate detected on this page — no next page.")
             self._repeat_found = True
 
         if not jobs_to_scrape_now and len(cards) > 0:
@@ -148,22 +151,36 @@ class LinkedInJobSpider(Spider):
                     self.sel["search"]["detail_panel"], timeout=_DETAIL_TIMEOUT
                 )
             except Exception:
-                print(f"[warn] Detail panel timed out for {job_id} — skipping")
+                logger.warning(f"[warn] Detail panel timed out for {job_id} — skipping")
                 return None
 
             if (
                 await page.locator(self.sel["search"]["login_redirect"]).count()
                 > 0
             ):
-                print("[warn] Redirected to login — session may have expired")
+                logger.warning("[warn] Redirected to login — session may have expired")
                 self._login_redirect = True
                 return None
 
-            await asyncio.sleep(random.uniform(1.5, 4.0))
+            d = self.sel["job_detail"]
+            # Detail panel HTML exists instantly (skeleton) — poll for
+            # company hydration instead of a fixed sleep. Detail company
+            # often takes 1-3s after click to populate.
+            detail_company_loc = page.locator(d["company"]).first
+            # Short initial settle then poll for non-empty company.
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+            for _ in range(12):  # up to ~6s
+                try:
+                    if ((await detail_company_loc.text_content()) or "").strip():
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+            # Small extra settle for title/description to finish hydrating.
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
             html = await page.content()
             sel = Selector(html)
-            d = self.sel["job_detail"]
 
             title = _text(sel, d["title"])
             company = _text(sel, d["company"])
@@ -172,13 +189,50 @@ class LinkedInJobSpider(Spider):
             mgr_name = _text(sel, d["hiring_manager_name"])
             mgr_role = _text(sel, d["hiring_manager_role"])
 
+            # Fallback chain: Selector(html) can be stale vs live DOM,
+            # and detail hydration can still lag. Card subtitle is always
+            # populated (left pane) — use it when detail is empty.
             if not company:
-                # Unknown DOM variant (e.g. companies without a logo) —
-                # keep the markup so selectors can be fixed offline.
-                markup.save_snapshot("linkedin", "company_missing", html)
-                print(f"  [warn] Company name not parsed for {job_id}")
+                try:
+                    live = ((await detail_company_loc.text_content()) or "").strip()
+                    if live:
+                        company = live
+                except Exception:
+                    pass
+            if not company:
+                try:
+                    card_locator = self.sel["search"].get(
+                        "card_company", ".artdeco-entity-lockup__subtitle"
+                    )
+                    # Primary: the card Handle we clicked
+                    card_text = ""
+                    try:
+                        card_text = (
+                            (await card.locator(card_locator).first.text_content())
+                            or ""
+                        ).strip()
+                    except Exception:
+                        pass
+                    # Fallback: re-query by job_id in case card handle is stale
+                    if not card_text:
+                        try:
+                            alt = page.locator(
+                                f'li[data-occludable-job-id="{job_id}"] {card_locator}'
+                            ).first
+                            card_text = ((await alt.text_content()) or "").strip()
+                        except Exception:
+                            pass
+                    if card_text:
+                        company = card_text
+                except Exception as e:
+                    logger.warning(f"  [warn] card fallback failed for {job_id}: {e}")
 
-            print(f"  [ok] {title[:45]}")
+            if not company:
+                # Still empty after fallbacks — keep markup for debugging.
+                markup.save_snapshot("linkedin", "company_missing", html)
+                logger.warning(f"  [warn] Company name not parsed for {job_id}")
+
+            logger.info(f"  [ok] {title[:45]}")
             return {
                 "source": "linkedin",
                 "external_id": str(job_id),
@@ -194,7 +248,7 @@ class LinkedInJobSpider(Spider):
                 "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
         except Exception as e:
-            print(f"[error] Job {job_id}: {e}")
+            logger.error(f"[error] Job {job_id}: {e}")
             return None
 
     async def parse(self, response: Response):
@@ -216,7 +270,7 @@ class LinkedInJobSpider(Spider):
             if "start=" in response.url
             else response.url + f"&start={next_start}"
         )
-        print(f"[page] → page {next_start // _PAGE_SIZE + 1}")
+        logger.info(f"[page] → page {next_start // _PAGE_SIZE + 1}")
         yield Request(
             next_url,
             callback=self.parse,
@@ -230,7 +284,7 @@ def scrape(selectors: dict, cdp_url: str) -> dict:
     spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
-    print(
+    logger.info(
         f"[spider] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
     return {"items": items, "login_redirect": spider._login_redirect}

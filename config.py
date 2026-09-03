@@ -26,9 +26,9 @@ DB_PATH = os.path.join(DATA_DIR, "rtjobs.db")
 HEADLESS = os.environ.get("HEADLESS", "false").lower() == "true"
 
 # Remote debugging port so you can attach to the live headful browser
-# (chrome://inspect or any CDP client). Docker maps it to localhost.
+# (chrome://inspect or any CDP client). Docker maps it to localhost
+# via host networking (see docker-compose.yaml).
 CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", "9222"))
-CHROME_ARGS = [f"--remote-debugging-port={CHROME_DEBUG_PORT}"]
 
 # Kill stray chrome processes before starting (container-only safety net)
 KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() == "true"
@@ -55,6 +55,7 @@ CHECKPOINT_WAIT_SECONDS = int(os.environ.get("CHECKPOINT_WAIT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 # Wuzzuf
 # ---------------------------------------------------------------------------
+WUZZUF_ENABLED = os.environ.get("WUZZUF_ENABLED", "true").lower() == "true"
 WUZZUF_SEARCH_URL = os.environ.get("WUZZUF_SEARCH_URL", "https://wuzzuf.net/search/jobs?q=&start=0")
 WUZZUF_PROFILE_DIR = os.path.abspath(
     os.environ.get("WUZZUF_PROFILE_DIR", "./wuzzufprofile")
@@ -76,11 +77,28 @@ INDEED_PROFILE_DIR = os.path.abspath(
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_FAILURE_CHAT_ID = os.environ.get(
     "TELEGRAM_FAILURE_CHAT_ID", os.environ.get("TELEGRAM_TEST_ID", "")
 )
+
+# Validate required env vars at import time with a friendly error (instead
+# of a bare KeyError). Collect all missing keys before raising.
+_missing = [k for k, v in {
+    "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
+    "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+}.items() if not v]
+# Failure channel is optional, but warn if neither is set (alerts silently dropped).
+if _missing:
+    raise RuntimeError(
+        f"Missing required env vars: {', '.join(_missing)}. "
+        "Set them in .env (see README §1)."
+    )
+del _missing
+
+# Optional dead-man healthcheck (see B4 / README).
+HEALTHCHECK_URL = os.environ.get("HEALTHCHECK_URL", "").strip()
 
 # ---------------------------------------------------------------------------
 # Login retries / cooldown
@@ -88,11 +106,6 @@ TELEGRAM_FAILURE_CHAT_ID = os.environ.get(
 MAX_LOGIN_RETRIES = int(os.environ.get("MAX_LOGIN_RETRIES", "3"))
 # Cooldown after the 1st, 2nd, 3rd+ consecutive failure.
 LOGIN_COOLDOWN_SECONDS = [5 * 60, 15 * 60, 30 * 60]
-
-# ---------------------------------------------------------------------------
-# DB
-# ---------------------------------------------------------------------------
-MAX_JOBS = int(os.environ.get("MAX_JOBS", "10000"))
 
 # ---------------------------------------------------------------------------
 # Markup snapshots

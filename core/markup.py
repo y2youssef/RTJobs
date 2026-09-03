@@ -8,12 +8,15 @@ content are stripped so the files stay small and readable as selector
 references.
 """
 
+import logging
 import os
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 from config import MARKUP_DIR, MAX_SNAPSHOTS_PER_KIND
+
+logger = logging.getLogger(__name__)
 
 _SAFE_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
@@ -127,7 +130,7 @@ def save_snapshot(site: str, kind: str, html: str) -> str | None:
         _prune(site, kind)
         return os.path.relpath(path, MARKUP_DIR)
     except OSError as e:
-        print(f"[markup] Failed to save snapshot: {e}")
+        logger.warning(f"[markup] Failed to save snapshot: {e}")
         return None
 
 

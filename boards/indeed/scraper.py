@@ -19,6 +19,7 @@ Data sources:
 Single search URL, sort=date, NO pagination (pagination is login-gated).
 """
 
+import logging
 import asyncio
 import json
 import random
@@ -32,6 +33,8 @@ from scrapling.spiders import Request, Response, Spider
 from config import INDEED_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
+
+logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://eg.indeed.com"
 
@@ -96,13 +99,13 @@ def _extract_balanced_json(html: str, marker_re: re.Pattern) -> dict:
         k += 1
 
     if depth != 0:
-        print("[indeed] Unbalanced JSON blob — marker found, brace never closed.")
+        logger.warning("[indeed] Unbalanced JSON blob — marker found, brace never closed.")
         return {}
 
     try:
         return json.loads(html[start:k + 1])
     except (ValueError, TypeError) as e:
-        print(f"[indeed] Could not parse embedded JSON: {e}")
+        logger.warning(f"[indeed] Could not parse embedded JSON: {e}")
         return {}
 
 
@@ -344,11 +347,11 @@ class IndeedJobSpider(Spider):
             await page.wait_for_timeout(2500)  # let the SSR blobs land
             html = await page.content()
         except Exception as e:
-            print(f"[indeed] Could not read search page: {e}")
+            logger.info(f"[indeed] Could not read search page: {e}")
             return
 
         if "INDEED_CLOUDFLARE_STATIC_PAGE" in html:
-            print("[indeed] Cloudflare challenge page detected.")
+            logger.info("[indeed] Cloudflare challenge page detected.")
             markup.save_snapshot("indeed", "cloudflare_challenge", html)
             return
 
@@ -357,7 +360,7 @@ class IndeedJobSpider(Spider):
         for job in jobs:
             self.seen_ids.add(job["external_id"])
 
-        print(
+        logger.info(
             f"[indeed] {len(jobs)} new, {seen} already seen"
             f" ({blob_missing and 'blob MISSING' or 'blob ok'})"
         )
@@ -375,14 +378,14 @@ class IndeedJobSpider(Spider):
         try:
             html = await page.content()
         except Exception as e:
-            print(f"[indeed] Detail read failed for {key}: {e}")
+            logger.warning(f"[indeed] Detail read failed for {key}: {e}")
             html = ""
 
         desc, extra = _extract_detail(html)
         if desc:
             job["description"] = desc
         else:
-            print(f"[indeed] No description parsed for {key}")
+            logger.warning(f"[indeed] No description parsed for {key}")
             if self._detail_snapshots < 2:
                 markup.save_snapshot("indeed", "detail_no_desc", html)
                 self._detail_snapshots += 1
@@ -396,7 +399,7 @@ class IndeedJobSpider(Spider):
             key = job["external_id"]
             if key in self._queued or len(self._queued) >= _MAX_DETAIL_FETCHES:
                 # Detail cap hit — keep the snippet as the description.
-                print(f"[indeed] Detail fetch skipped for {key} (cap reached)")
+                logger.warning(f"[indeed] Detail fetch skipped for {key} (cap reached)")
                 yield job
                 continue
 
@@ -421,7 +424,7 @@ def scrape(selectors: dict, cdp_url: str) -> list[dict]:
     spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
-    print(
+    logger.info(
         f"[indeed] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
     return items

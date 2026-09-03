@@ -1,6 +1,7 @@
 """LinkedIn login flow: session check, automated credential fill,
 checkpoint/2FA handling with manual-solve pause, and retry/cooldown wiring."""
 
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from core import login_state, markup
 from core.human import human_wait, type_delay
 from core.telegram import notify_failure
 
+logger = logging.getLogger(__name__)
+
 SIGN_IN_BUTTON = re.compile(r"^(Sign in|تسجيل الدخول)$")
 
 # URL fragments that indicate where we are after login attempts.
@@ -36,7 +39,7 @@ def kill_zombie_chrome():
     """
     if not KILL_CHROME_ON_START:
         return
-    print("[login] Killing stray Chrome processes...")
+    logger.info("[login] Killing stray Chrome processes...")
     try:
         subprocess.run(
             ["pkill", "-f", "chrome"], capture_output=True, timeout=10
@@ -49,7 +52,7 @@ def wipe_profile():
     """Delete the browser profile so the next login starts completely fresh."""
     if not os.path.isdir(LINKEDIN_PROFILE_DIR):
         return
-    print(f"[login] Wiping profile dir {LINKEDIN_PROFILE_DIR}")
+    logger.info(f"[login] Wiping profile dir {LINKEDIN_PROFILE_DIR}")
     shutil.rmtree(LINKEDIN_PROFILE_DIR, ignore_errors=True)
 
 
@@ -70,7 +73,7 @@ def _login_error_visible(page, selectors: dict) -> bool:
 
 def _handle_checkpoint(page, selectors: dict) -> bool:
     """Security checkpoint / 2FA: alert, pause for manual solve via CDP."""
-    print("[login] CHECKPOINT detected — pausing for manual solve.")
+    logger.warning("[login] CHECKPOINT detected — pausing for manual solve.")
     snapshot = markup.save_snapshot("linkedin", "checkpoint", page.content())
     notify_failure(
         "LinkedIn checkpoint / 2FA",
@@ -85,10 +88,10 @@ def _handle_checkpoint(page, selectors: dict) -> bool:
     while time.time() < deadline:
         time.sleep(5)
         if _is_logged_in(page):
-            print("[login] Checkpoint solved — resuming.")
+            logger.info("[login] Checkpoint solved — resuming.")
             return True
 
-    print("[login] Checkpoint not solved in time — aborting run.")
+    logger.warning("[login] Checkpoint not solved in time — aborting run.")
     notify_failure(
         "LinkedIn checkpoint unresolved",
         "Manual solve timed out. The next scheduled run will retry.",
@@ -99,7 +102,7 @@ def _handle_checkpoint(page, selectors: dict) -> bool:
 
 def _register_failure(reason: str, snapshot: str | None = None):
     count = login_state.record_failure()
-    print(f"[login] Failure ({reason}). Consecutive failures: {count}")
+    logger.warning(f"[login] Failure ({reason}). Consecutive failures: {count}")
 
     if login_state.max_retries_reached() and not login_state.alert_already_sent():
         login_state.mark_alert_sent()
@@ -162,7 +165,7 @@ def _ensure_username_visible(page, selectors: dict):
         except Exception:
             pass
 
-    print("[login] Falling back to navigating to /login directly...")
+    logger.info("[login] Falling back to navigating to /login directly...")
     try:
         page.goto(LINKEDIN_LOGIN_URL, wait_until="domcontentloaded")
         username.wait_for(state="visible", timeout=15_000)
@@ -179,7 +182,7 @@ def _do_login(page, selectors: dict) -> bool:
         )
         return False
 
-    print("[login] Filling credentials...")
+    logger.info("[login] Filling credentials...")
     try:
         user_input = _ensure_username_visible(page, selectors)
         if user_input is None:
@@ -210,7 +213,7 @@ def _do_login(page, selectors: dict) -> bool:
         login_btn = page.get_by_role("button", name=SIGN_IN_BUTTON).first
         login_btn.click()
     except Exception as e:
-        print(f"[login] Input automation error: {e}")
+        logger.warning(f"[login] Input automation error: {e}")
         snapshot = _capture_failure(page)
         _register_failure("automation error", snapshot)
         return False
@@ -222,7 +225,7 @@ def _classify(page, selectors: dict) -> bool | None:
     """Classify the current page after login. Returns True (logged in),
     False (failed with a known reason), or None (still undecided)."""
     if _is_logged_in(page):
-        print("[login] SUCCESS — session active.")
+        logger.info("[login] SUCCESS — session active.")
         login_state.reset_retries()
         return True
 
@@ -230,7 +233,7 @@ def _classify(page, selectors: dict) -> bool | None:
         return _handle_checkpoint(page, selectors)
 
     if _login_error_visible(page, selectors):
-        print("[login] Invalid credentials.")
+        logger.warning("[login] Invalid credentials.")
         snapshot = _capture_failure(page)
         _register_failure("invalid credentials", snapshot)
         return False
@@ -249,7 +252,7 @@ def _verify_routing(page, selectors: dict) -> bool:
     already contains it, so wait_for_url would return instantly before the
     navigation completes.
     """
-    print("[login] Verifying routing after submit...")
+    logger.info("[login] Verifying routing after submit...")
     dest = re.compile(r"(feed|/jobs|checkpoint|security_verification)")
 
     # Two event-driven waits back-to-back: the error message usually appears
@@ -264,7 +267,7 @@ def _verify_routing(page, selectors: dict) -> bool:
         if outcome is not None:
             return outcome
 
-    print(f"[login] Unexpected landing page: {page.url}")
+    logger.warning(f"[login] Unexpected landing page: {page.url}")
     snapshot = _capture_failure(page)
     _register_failure(f"unexpected landing: {page.url}", snapshot)
     return False
@@ -274,16 +277,16 @@ def ensure_logged_in(page, selectors: dict) -> bool:
     """Entry point (used as page_action). Returns True if ready to scrape."""
     if login_state.is_blocked():
         remaining = login_state.remaining_seconds()
-        print(f"[login] Blocked for another {remaining}s — skipping run.")
+        logger.info(f"[login] Blocked for another {remaining}s — skipping run.")
         return False
 
     if _is_logged_in(page):
-        print("[login] Session already active.")
+        logger.info("[login] Session already active.")
         login_state.reset_retries()
         return True
 
     if _on_checkpoint(page.url):
         return _handle_checkpoint(page, selectors)
 
-    print("[login] Not logged in — starting automated login.")
+    logger.info("[login] Not logged in — starting automated login.")
     return _do_login(page, selectors)

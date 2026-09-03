@@ -15,6 +15,7 @@ Structure verified against the scrapling docs: spiders/sessions.html
 (solve_cloudflare + user_data_dir on sessions).
 """
 
+import logging
 import json
 import re
 from datetime import datetime, timedelta
@@ -26,6 +27,8 @@ from scrapling.spiders import Request, Response, Spider
 from config import WUZZUF_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
+
+logger = logging.getLogger(__name__)
 
 _MAX_PAGES = 20
 
@@ -82,7 +85,7 @@ def _extract_state(html: str) -> dict:
         collection = (obj.get("job") or {}).get("collection") or {}
         return collection
     except (ValueError, TypeError) as e:
-        print(f"[wuzzuf] Could not parse SSR state: {e}")
+        logger.warning(f"[wuzzuf] Could not parse SSR state: {e}")
         return {}
 
 
@@ -285,7 +288,7 @@ class WuzzufJobSpider(Spider):
                 self.sel["search"]["title_link"], timeout=45_000
             )
         except Exception as e:
-            print(f"[wuzzuf] Job list never appeared: {e}")
+            logger.warning(f"[wuzzuf] Job list never appeared: {e}")
             markup.save_snapshot("wuzzuf", "search_failed", await page.content())
             return
 
@@ -299,11 +302,11 @@ class WuzzufJobSpider(Spider):
         for job in jobs:
             self.seen_ids.add(job["external_id"])
 
-        print(
+        logger.info(
             f"[wuzzuf] {len(jobs)} new + {found_duplicate and 'duplicate(s)' or 'no duplicates'}"
         )
         if found_duplicate:
-            print("[wuzzuf] Duplicate found — stopping pagination.")
+            logger.info("[wuzzuf] Duplicate found — stopping pagination.")
             self._repeat_found = True
 
         if not jobs and not found_duplicate:
@@ -328,7 +331,7 @@ class WuzzufJobSpider(Spider):
             if "start=" in response.url
             else response.url + f"&start={next_start}"
         )
-        print(f"[wuzzuf] → page start={next_start}")
+        logger.info(f"[wuzzuf] → page start={next_start}")
         yield Request(
             next_url,
             callback=self.parse,
@@ -342,7 +345,7 @@ def scrape(selectors: dict, cdp_url: str) -> list[dict]:
     spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
     result = spider.start()
     items = list(result.items)
-    print(
+    logger.info(
         f"[wuzzuf] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
     return items

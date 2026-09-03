@@ -1,6 +1,7 @@
 """Telegram messaging: job notifications (jobs channel) + failure alerts
 (dedicated failure channel)."""
 
+import logging
 import json
 import re
 import time
@@ -9,6 +10,8 @@ import requests
 
 from config import TELEGRAM_CHAT_ID, TELEGRAM_FAILURE_CHAT_ID, TELEGRAM_TOKEN
 from core import db
+
+logger = logging.getLogger(__name__)
 
 _API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -39,7 +42,7 @@ def _send(
                 timeout=10,
             )
         except requests.RequestException as e:
-            print(f"[telegram] Request error (attempt {attempt + 1}): {e}")
+            logger.warning(f"[telegram] Request error (attempt {attempt + 1}): {e}")
             time.sleep(2)
             continue
 
@@ -48,19 +51,19 @@ def _send(
 
         if resp.status_code == 429:
             wait = resp.json().get("parameters", {}).get("retry_after", 30)
-            print(f"[telegram] Rate limited — waiting {wait}s...")
+            logger.warning(f"[telegram] Rate limited — waiting {wait}s...")
             time.sleep(wait + 1)
             continue
 
         if resp.status_code == 400 and parse_mode:
             # MarkdownV2 escaping issue — resend as plain text
-            print("[telegram] Parse error, resending without MarkdownV2")
+            logger.warning("[telegram] Parse error, resending without MarkdownV2")
             return _send(chat_id, text, parse_mode=None, max_attempts=1)
 
-        print(f"[telegram] Failed: {resp.text}")
+        logger.error(f"[telegram] Failed: {resp.text}")
         return False
 
-    print(f"[telegram] Gave up after {max_attempts} attempts")
+    logger.error(f"[telegram] Gave up after {max_attempts} attempts")
     return False
 
 
@@ -100,8 +103,8 @@ def notify_failure(subject: str, detail: str = "", snapshot: str | None = None,
                    hint: str | None = None) -> bool:
     """Send an alert to the failure channel."""
     if not TELEGRAM_FAILURE_CHAT_ID:
-        print("[telegram] No failure chat id configured — alert printed only.")
-        print(f"[alert] {subject}: {detail}")
+        logger.warning("[telegram] No failure chat id configured — alert printed only.")
+        logger.info(f"[alert] {subject}: {detail}")
         return False
 
     text = f"🚨 *{escape_md(subject)}*\n\n{escape_md(detail)}"

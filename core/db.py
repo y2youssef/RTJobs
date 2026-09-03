@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
-from config import DB_PATH, MAX_JOBS
+from config import DB_PATH
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -73,7 +73,7 @@ def init_db():
 
 
 def save_job(job: dict):
-    """Insert job and mark its id as seen. Prune jobs table to MAX_JOBS."""
+    """Insert job and mark its id as seen. No pruning — keep all jobs."""
     with get_db() as conn:
         conn.execute(
             """
@@ -100,17 +100,6 @@ def save_job(job: dict):
         conn.execute(
             "INSERT OR IGNORE INTO seen_ids (source, external_id) VALUES (?, ?)",
             (job["source"], str(job["external_id"])),
-        )
-
-        conn.execute(
-            """
-            DELETE FROM jobs WHERE id NOT IN (
-                SELECT id FROM jobs
-                ORDER BY scraped_at DESC, id DESC
-                LIMIT ?
-            )
-            """,
-            (MAX_JOBS,),
         )
 
 

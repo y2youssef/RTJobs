@@ -11,7 +11,8 @@
     "job_id_attr": "data-occludable-job-id",
     "results_list": ".jobs-search-results-list, .scaffold-layout__list",
     "detail_panel": "#job-details",
-    "login_redirect": "input#username"
+    "login_redirect": "input#username",
+    "card_company": ".artdeco-entity-lockup__subtitle"
   },
   "job_detail": {
     "title": "h1.t-24.t-bold",

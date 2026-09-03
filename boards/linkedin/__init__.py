@@ -7,9 +7,10 @@ spider both connect to that same Chrome over cdp_url and reuse its default
 (persistent profile) context, so the login cookies carry into the scrape.
 """
 
+import logging
 from scrapling.fetchers import StealthySession
 
-from boards.base import JobBoard
+from boards.base import JobBoard, persist_and_notify
 from boards.linkedin import login, scraper
 from config import (
     CHROME_DEBUG_PORT,
@@ -19,14 +20,14 @@ from config import (
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
 )
-from core import blocklist, db, login_state, telegram
+from core import db, login_state, telegram
 from core.browser import (
-    cdp_url_for,
+    chrome_session,
     install_cdp_default_context_patch,
-    launch_cdp_chrome,
     patch_no_load_wait,
-    stop_chrome,
 )
+
+logger = logging.getLogger(__name__)
 
 install_cdp_default_context_patch()
 
@@ -43,14 +44,14 @@ class LinkedInBoard(JobBoard):
         # inside page_action as a safety net.)
         if login_state.is_blocked():
             remaining = login_state.remaining_seconds()
-            print(f"[linkedin] Skipping run — blocked for {remaining}s.")
+            logger.info(f"[linkedin] Skipping run — blocked for {remaining}s.")
             db.finish_run(run_id, "blocked")
             return 0
 
         # Maxed retries + cooldown expired -> fresh login. The profile must
         # be wiped BEFORE the browser starts (never from under a live Chrome).
         if login_state.should_wipe_profile():
-            print("[linkedin] Cooldown over, retry count maxed — wiping profile.")
+            logger.info("[linkedin] Cooldown over, retry count maxed — wiping profile.")
             login.wipe_profile()
             login_state.reset_retries()
 
@@ -58,19 +59,21 @@ class LinkedInBoard(JobBoard):
         # start our own browser (inside a page_action it would kill itself).
         login.kill_zombie_chrome()
 
-        cdp = cdp_url_for(CHROME_DEBUG_PORT)
-        chrome = launch_cdp_chrome(
+        with chrome_session(
             LINKEDIN_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
             clean_locks=KILL_CHROME_ON_START,
-        )
+        ) as cdp:
+            return self._run(cdp, run_id)
 
-        try:
-            return self._run(chrome, cdp, run_id)
-        finally:
-            stop_chrome(chrome)
-
-    def _run(self, chrome, cdp: str, run_id: int) -> int:
+    def _run(self, cdp: str, run_id: int) -> int:
         outcome: dict = {"ok": False}
+        finished = False
+
+        def _finish(status: str, **kw):
+            nonlocal finished
+            if not finished:
+                finished = True
+                db.finish_run(run_id, status, **kw)
 
         def page_action(page):
             outcome["ok"] = login.ensure_logged_in(page, self.selectors)
@@ -83,19 +86,19 @@ class LinkedInBoard(JobBoard):
                 page_setup=patch_no_load_wait,
                 page_action=page_action,
             ) as session:
-                print("[linkedin] Opening login page (redirects to feed if active)")
+                logger.info("[linkedin] Opening login page (redirects to feed if active)")
                 session.fetch(LINKEDIN_LOGIN_URL, wait=5000)
 
             if not outcome["ok"]:
-                print("[linkedin] Login check failed — skipping scrape.")
-                db.finish_run(run_id, "login_failed")
+                logger.info("[linkedin] Login check failed — skipping scrape.")
+                _finish("login_failed")
                 return 0
 
             result = scraper.scrape(self.selectors, cdp_url=cdp)
 
             if result["login_redirect"]:
-                print("[linkedin] Session died mid-scrape — aborting.")
-                db.finish_run(run_id, "session_expired")
+                logger.info("[linkedin] Session died mid-scrape — aborting.")
+                _finish("session_expired")
                 telegram.notify_failure(
                     "LinkedIn session expired mid-scrape",
                     "The browser was redirected to login while scraping."
@@ -104,36 +107,19 @@ class LinkedInBoard(JobBoard):
                 )
                 return 0
 
-            new_count = 0
-            blocked_names: list[str] = []
-            for job in result["items"]:
-                if blocklist.is_blocked(job["source"], job.get("company") or ""):
-                    db.mark_seen(job["source"], job["external_id"])
-                    blocked_names.append(job.get("company") or "?")
-                    continue
-                db.save_job(job)
-                new_count += 1
-            if blocked_names:
-                print(
-                    f"[linkedin] Filtered out {len(blocked_names)} blocked-company"
-                    f" job(s): {', '.join(sorted(set(blocked_names)))}"
-                )
-            print(f"[linkedin] Saved {new_count} new job(s)")
+            new_count, _sent = persist_and_notify(self.name, result["items"])
 
-            pending = db.get_unnotified(self.name)
-            sent = telegram.notify_jobs(pending)
-            print(f"[linkedin] Notified {sent} job(s)")
-
-            db.finish_run(run_id, "ok", jobs_found=new_count)
+            _finish("ok", jobs_found=new_count)
             return new_count
 
-        except SystemExit:
-            raise
-        except Exception as e:
-            db.finish_run(run_id, "error", error=str(e))
+        except BaseException as e:
+            if isinstance(e, SystemExit):
+                _finish("interrupted", error="terminated by signal")
+                raise
+            _finish("error", error=str(e))
             telegram.notify_failure(
                 "LinkedIn board failed",
                 str(e),
             )
-            print(f"[linkedin] Run failed: {e}")
+            logger.error(f"[linkedin] Run failed: {e}")
             return 0

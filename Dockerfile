@@ -13,7 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# Non-root user — this is why we don't need --no-sandbox
+# Non-root user — Chrome still needs --no-sandbox in containers even as
+# non-root (see core/browser.py); running as non-root limits the blast radius.
 # ---------------------------------------------------------------------------
 RUN groupadd -r scraper && useradd -r -g scraper -u 1000 scraper
 

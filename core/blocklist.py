@@ -16,11 +16,14 @@ collapsed) company name, so "alignerr" also blocks "Alignerr Inc.".
 Missing/invalid file = nothing is blocked (fail open, but loudly logged).
 """
 
+import logging
 import json
 import os
 import re
 
 from config import MARKUP_DIR
+
+logger = logging.getLogger(__name__)
 
 _PATH = os.path.join(MARKUP_DIR, "blocked_companies.json")
 _cache: dict | None = None
@@ -43,10 +46,10 @@ def _load() -> dict:
             if isinstance(companies, list)
         }
     except FileNotFoundError:
-        print(f"[blocklist] {_PATH} not found — no companies blocked.")
+        logger.warning(f"[blocklist] {_PATH} not found — no companies blocked.")
         _cache = {}
     except (ValueError, TypeError, AttributeError) as e:
-        print(f"[blocklist] Could not parse {_PATH}: {e} — nothing blocked.")
+        logger.warning(f"[blocklist] Could not parse {_PATH}: {e} — nothing blocked.")
         _cache = {}
     return _cache
 

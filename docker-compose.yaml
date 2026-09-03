@@ -29,7 +29,10 @@ services:
     restart: "no"
 
   scheduler:
-    image: mcuadros/ofelia:latest
+    # Pinned to 0.3.22 (latest is 0.3.x line; 0.4.x drops leading-seconds cron
+    # and would silently break the "0 */6 * * * *" schedule — see AGENTS.md #7).
+    # Digest for amd64: sha256:0aeec97f549d3cae77cd5a926001d5beeac3aa91e69363f9db1e85851c091328
+    image: mcuadros/ofelia:0.3.22
     container_name: ofelia
     depends_on:
       - scraper

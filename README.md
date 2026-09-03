@@ -1,6 +1,6 @@
 # RTJobs
 
-Headful job-board scraper (LinkedIn + Wuzzuf) that runs on a schedule in Docker, persists jobs to SQLite, and notifies you on Telegram — jobs on one channel, failures on a separate alert channel. Boards can be toggled via env (`LINKEDIN_ENABLED`).
+Headful job-board scraper (LinkedIn + Wuzzuf + Indeed) that runs on a schedule in Docker, persists jobs to SQLite (no cap — all jobs retained via `seen_ids` dedupe), and notifies you on Telegram — jobs on one channel, failures on a separate alert channel. Boards can be toggled via env (`LINKEDIN_ENABLED`, `WUZZUF_ENABLED`, `INDEED_ENABLED`).
 
 ## Architecture
 
@@ -40,9 +40,14 @@ DATA_DIR=.                    # docker: /data
 CHROME_DEBUG_PORT=9222        # remote debugging port
 CHECKPOINT_WAIT_SECONDS=600   # pause for manual 2FA/checkpoint solve
 MAX_LOGIN_RETRIES=3
-MAX_JOBS=10000
 MAX_SNAPSHOTS_PER_KIND=20
 KILL_CHROME_ON_START=false    # docker: true
+HEALTHCHECK_URL=              # optional dead-man ping (healthchecks.io) at end of each run
+LINKEDIN_ENABLED=true
+WUZZUF_ENABLED=true
+INDEED_ENABLED=false          # see INDEED.md
+LOG_LEVEL=INFO                # debug/info/warning/error
+LOG_FILE=./logs/rtjobs.log    # docker: /data/logs/rtjobs.log (rotating 5×5MB); empty to disable file log
 ```
 
 ## 2. Run locally (visible browser window)
@@ -74,15 +79,20 @@ docker compose logs -f scraper
 
 ## 4. Step into the live scrape (CDP)
 
-While a run is in progress:
+While a run is in progress (Chrome is only up during a run):
 
 1. Open `http://localhost:9222` in a browser, or `chrome://inspect` → "Remote
-   target" (or any CDP client — curl `http://localhost:9222/json/version` to
-   confirm).
+   target" (or any CDP client — `curl http://localhost:9222/json/version` to
+   confirm). Works because `docker-compose.yaml` uses `network_mode: host` — the
+   container's loopback **is** the host's loopback (a bridge `ports:` mapping
+   would not reach it).
 2. You can watch, drive, and interact with the real browser — this is also how
    you solve LinkedIn checkpoints/2FA manually.
 3. Port is bound to `127.0.0.1` only. To reach it from another machine,
    SSH-tunnel: `ssh -L 9222:localhost:9222 user@host`.
+4. If `curl` fails outside a run, that's expected — Chrome is one-shot per
+   scheduled invocation (`docker start rtjobs`). Check `docker logs ofelia` for
+   the next fire time.
 
 ## 5. LinkedIn login behavior
 
@@ -107,16 +117,16 @@ While a run is in progress:
 
 ## 7. When the site changes (markup resilience)
 
-- Every selector lives in `markup/linkedin/selectors.json` — fix selectors
+- Every selector lives in `markup/<site>/selectors.json` — fix selectors
   there, no code change.
 - Snapshots are saved automatically for: login failures, checkpoints, empty
   search pages, login-redirects — sanitized and pruned to 20 per kind under
-  `markup/linkedin/snapshots/`.
+  `markup/<site>/snapshots/`.
 - Reference files in `markup/linkedin/` (e.g. `manual_login_en.html`) are
   optimized versions of real captured markup — use them to re-derive selectors
   offline against the actual DOM.
 
-## 7b. Blocking companies
+## 8. Blocking companies
 
 Edit `markup/blocked_companies.json` (bind-mounted — no rebuild needed):
 
@@ -124,7 +134,8 @@ Edit `markup/blocked_companies.json` (bind-mounted — no rebuild needed):
 {
   "*":        ["blocks every source"],
   "linkedin": ["Company Name"],
-  "wuzzuf":   ["Company Name"]
+  "wuzzuf":   ["Company Name"],
+  "indeed":   ["Company Name"]
 }
 ```
 
@@ -132,7 +143,7 @@ Matching is case-insensitive substring, so `"alignerr"` also blocks
 `"Alignerr Inc."`. Blocked jobs are dropped before saving/notification and
 marked seen so they're never re-scraped.
 
-## 8. Adding a new board
+## 9. Adding a new board
 
 1. Subclass `JobBoard` in `boards/<site>/` with `name`, `run()` returning the
    number of new jobs saved (job dicts follow the shape `source, external_id,
@@ -150,13 +161,25 @@ timestamps come from the embedded SSR state (`window.Wuzzuf`), parsed
 straight out of the page HTML (`_extract_state`) and merged over the
 DOM-extracted card data. Reference markup: `markup/wuzzuf/wazzuf_guide.txt`.
 
-## 9. Troubleshooting
+## 10. Logs
+
+Logs go to **both** `stdout` (visible via `docker logs scraper` / `docker logs ofelia`) and a **rotating file** at `LOG_FILE` (default `DATA_DIR/logs/rtjobs.log` → in Docker `scraper_data:/data` → `/data/logs/rtjobs.log`). Keeps 5×5 MB. Set `LOG_LEVEL=DEBUG` for verbose, `LOG_FILE=""` to disable file logging. Locally check `./logs/rtjobs.log`.
+
+## 11. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `curl localhost:9222` fails | Confirms CDP flag reached Chrome — if not, relaunch Chrome manually with `--remote-debugging-port=9222` and set `cdp_url` in the session config. |
+| `curl localhost:9222` fails (no run) | Expected — Chrome only runs during a scrape. Wait for next `ofelia` tick (`docker logs ofelia`) or `docker start rtjobs`. Inside a run it should respond. |
+| `curl localhost:9222` fails (mid-run) | Check `docker logs scraper` for Chrome launch errors; verify `network_mode: host` and that port 9222 is free. |
+| `xvfb-run` hangs forever | Missing `xauth` package or PID 1 `SIGUSR1` issue — image installs `xauth` and `docker-compose.yaml` sets `init: true` (tini). See `AGENTS.md:6a-b`. |
+| Chrome SIGTRAP/crash on start | No writable `HOME` — image sets `HOME=/home/scraper` (AGENTS.md:6c). |
+| `profile appears to be in use` | Stale `Singleton*` lock after kill — `KILL_CHROME_ON_START=true` + `core/browser.py:launch_cdp_chrome(clean_locks=True)` clears it (AGENTS.md:6d). Also handled by `init: true` + SIGTERM grace. |
+| Times in DB off by hours | Container TZ defaults to UTC — compose pins `TZ=Africa/Cairo` (AGENTS.md:6e). |
+| `docker stop` leaves zombies | Fixed by `main.py` SIGTERM handler (`stop_chrome` + `finish_run` interrupted) + `init: true`. `kill_zombie_chrome` is now safety-net only. |
 | No failure alerts | Check `TELEGRAM_TEST_ID`/`TELEGRAM_FAILURE_CHAT_ID` is a chat the bot can post to. |
 | Stuck "blocked" state | `python main.py --reset-login` (or: `sqlite3 /data/rtjobs.db "UPDATE login_state SET value='0' WHERE key IN ('retry_count','blocked_until','max_retries_alerted');"`) |
 | Chrome won't start in container | Profile lock from a crash: `KILL_CHROME_ON_START=true` handles it; otherwise `docker compose down && docker compose up -d`. |
-| Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead and heavy resources are dropped. |
+| Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead and heavy resources are dropped (see `core/browser.py:patch_no_load_wait`). |
 | Login keeps failing after site change | Check the newest `markup/linkedin/snapshots/login_failure/*.html` and update `selectors.json`. |
+| Silent "runs stopped" (no jobs, no alerts) | Set `HEALTHCHECK_URL` (healthchecks.io) — `main.py` pings it on success; configure dead-man alert there. |
+| Full `jobs` table growing large | By design now uncapped (no `MAX_JOBS` prune) — use `DELETE FROM jobs WHERE ...` or rotate `rtjobs.db` volume if needed. `seen_ids` keeps dedupe forever. |

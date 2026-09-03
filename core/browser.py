@@ -26,11 +26,15 @@ installed here swaps in the browser's default context instead.
 """
 
 import inspect
+import logging
 import os
 import shutil
 import subprocess
 import time
 import urllib.request
+from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 
 def patch_no_load_wait(page):
@@ -139,7 +143,7 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    print(f"[browser] Chrome up — CDP attachable at http://localhost:{port}")
+                    logger.info(f"[browser] Chrome up — CDP attachable at http://localhost:{port}")
                     return proc
         except Exception:
             time.sleep(0.3)
@@ -161,6 +165,36 @@ def stop_chrome(proc: subprocess.Popen | None) -> None:
 
 def cdp_url_for(port: int) -> str:
     return f"http://127.0.0.1:{port}"
+
+
+# ---------------------------------------------------------------------------
+# Context-manager helper: bundles launch/stop/lock-cleanup (C3)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def chrome_session(
+    profile_dir: str,
+    port: int,
+    headless: bool = False,
+    clean_locks: bool = False,
+    timeout: float = 30.0,
+):
+    """Launch Chrome with CDP, yield its cdp_url, then stop it.
+
+    Wrapper around :func:`launch_cdp_chrome` / :func:`stop_chrome` so boards
+    don't repeat the same ~5-line block. Example::
+
+        with chrome_session(profile_dir, port, headless, clean_locks) as cdp:
+            items = scraper.scrape(selectors, cdp_url=cdp)
+    """
+    proc = launch_cdp_chrome(
+        profile_dir, port, headless=headless, timeout=timeout, clean_locks=clean_locks
+    )
+    try:
+        yield cdp_url_for(port)
+    finally:
+        stop_chrome(proc)
 
 
 _PATCH_INSTALLED = False

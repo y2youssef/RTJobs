@@ -1,0 +1,31 @@
+# Prevent bloated context from dev/local artifacts (also keeps secrets out)
+.venv
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+.env
+*.db
+*.log
+
+# Local browser profiles (Docker uses named volumes)
+chromeprofile
+wuzzufprofile
+indeedprofile
+LinkedInProfile
+login_retries.json
+
+# Snapshots are runtime debug output, not needed in image
+markup/*/snapshots
+
+# Untracked local analysis/app experiments (not part of scraper image)
+dataanalysis
+jobnetworkminiapp
+
+# Legacy root artifacts (now removed, but guard against re-creation)
+example.html
+login.html
+linkedin_jobs.db
+linkedin_jobs.json
+jobs.json
