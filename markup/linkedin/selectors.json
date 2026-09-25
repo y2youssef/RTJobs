@@ -19,6 +19,8 @@
     "company": ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, .topcard__org-name-link",
     "posted_at": "span.tvm__text--positive strong",
     "description": "#job-details",
+    "detail_header": ".job-details-jobs-unified-top-card__tertiary-description-container",
+    "fit_pills": ".job-details-fit-level-preferences button",
     "hiring_manager_name": ".jobs-poster__name strong",
     "hiring_manager_role": ".hirer-card__hirer-information .text-body-small"
   }

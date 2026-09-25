@@ -52,6 +52,45 @@ def _text(sel: Selector, css: str, separator: str = "") -> str:
     return (text or "").strip()
 
 
+# Pill values LinkedIn renders in the fit-preferences row. Stored raw in
+# extra; normalization to the da_guide enums happens at extraction time.
+_WORKPLACE_PILLS = {"on-site", "on site", "remote", "hybrid"}
+_JOB_TYPE_PILLS = {"full-time", "part-time", "contract", "temporary",
+                   "internship", "freelance", "volunteer", "other"}
+# Segments of the detail header that are NOT the location.
+_HEADER_NOISE = re.compile(
+    r"^(·|applicants?|no response insights.*|school alum.*)$"
+    r"|ago|minute|hour|day|week|month|year|applicant|hiring|promoted",
+    re.I,
+)
+
+
+def _parse_detail_header(header_text: str, pill_texts: list) -> dict:
+    """Split the detail top-card header into location/workplace/job_type.
+
+    header_text is the tertiary-description container rendered with "|"
+    separators, e.g. "Cairo, Egypt|·|6 minutes ago|·|0 applicants".
+    pill_texts are the fit-preferences buttons, e.g. ["On-site",
+    "Full-time"]. Missing values come back as "".
+    """
+    location, workplace, job_type = "", "", ""
+    for part in (p.strip(" \t\r\n\xa0") for p in header_text.split("|")):
+        if not part or part == "·":
+            continue
+        if _HEADER_NOISE.search(part):
+            continue
+        if not location:
+            location = part
+    for pill in pill_texts:
+        key = pill.strip().lower()
+        if not workplace and key in _WORKPLACE_PILLS:
+            workplace = pill.strip()
+        elif not job_type and key in _JOB_TYPE_PILLS:
+            job_type = pill.strip()
+    return {"detail_location": location, "workplace": workplace,
+            "job_type": job_type}
+
+
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
@@ -189,6 +228,22 @@ class LinkedInJobSpider(Spider):
             mgr_name = _text(sel, d["hiring_manager_name"])
             mgr_role = _text(sel, d["hiring_manager_role"])
 
+            # Structured header: location ("Cairo, Egypt · 6 minutes ago")
+            # plus fit-preference pills ("On-site", "Full-time"). Stored
+            # raw in extra; the extractor normalizes to the guide enums.
+            header_text = _text(sel, d.get("detail_header", ""),
+                                separator="|") if d.get("detail_header") else ""
+            pill_texts: list = []
+            if d.get("fit_pills"):
+                try:
+                    for el in sel.css(d["fit_pills"]):
+                        t = (el.get_all_text() or "").strip()
+                        if t:
+                            pill_texts.append(t)
+                except Exception:
+                    pass
+            header = _parse_detail_header(header_text, pill_texts)
+
             # Fallback chain: Selector(html) can be stale vs live DOM,
             # and detail hydration can still lag. Card subtitle is always
             # populated (left pane) — use it when detail is empty.
@@ -244,6 +299,9 @@ class LinkedInJobSpider(Spider):
                 "extra": {
                     "hiring_manager_name": mgr_name,
                     "hiring_manager_role": mgr_role,
+                    "detail_location": header["detail_location"],
+                    "workplace": header["workplace"],
+                    "job_type": header["job_type"],
                 },
                 "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }

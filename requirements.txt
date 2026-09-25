@@ -3,3 +3,7 @@ playwright==1.61.0
 patchright==1.61.2
 requests==2.34.2
 python-dotenv==1.2.2
+# analysis-only (charts.py runs locally, never in the scraper container)
+matplotlib==3.11.1
+seaborn==0.13.2
+plotly==7.0.0

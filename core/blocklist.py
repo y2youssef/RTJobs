@@ -13,6 +13,8 @@ Format:
     }
 Matching is case-insensitive substring on the normalized (whitespace-
 collapsed) company name, so "alignerr" also blocks "Alignerr Inc.".
+Entries starting with "=" must equal the full normalized name instead,
+so "=turing" blocks "Turing" but not "manufacturing" companies.
 Missing/invalid file = nothing is blocked (fail open, but loudly logged).
 """
 
@@ -62,6 +64,11 @@ def is_blocked(source: str, company: str) -> bool:
     entries = _load()
     for key in (source, "*"):
         for blocked in entries.get(key, ()):
-            if blocked and blocked in name:
+            if not blocked:
+                continue
+            if blocked.startswith("="):
+                if name == blocked[1:]:
+                    return True
+            elif blocked in name:
                 return True
     return False
