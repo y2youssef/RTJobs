@@ -336,3 +336,23 @@ LinkedIn/Indeed sample parsing, and migration on a copy of the 37,748-job DB.
   delivered to their expected destinations across 11 families. First-batch cost
   $0.00602995; 81,480 provider-cached input tokens. Worker and scheduler remain
   running. See [deployment record](docs/DEPLOYMENT.md).
+
+
+## G — Whole-cycle classification, independent delivery and local monitoring
+
+- One completion request per completed scrape cycle, containing every uncached
+  new job from all enabled boards; no 25-job cap. SQLite records cycle boundaries
+  and shared request usage once. Full relevant input is preserved by default.
+- Validate cardinality, IDs and every result before publishing the model response
+  atomically. Output-limit failures remain pending without silently splitting.
+- Provider/network/budget failures remain pending with persistent backoff; no
+  automatic Other routing. Authentication failures, budget pauses, repeated
+  failures, stale queues and dead workers are monitored independently.
+- Separate delivery service posts saved results while later model calls run.
+  SQLite acknowledgements, per-channel throttles and delivery retries are retained.
+- Local Telegram alerts deduplicate across restarts and retry failed sends.
+  External machine-outage monitoring is deferred by explicit user preference.
+- Verification: offline 37-job single-call test; invalid/truncated response,
+  billing, recovery, migration, concurrency and alert checks. Live evaluation
+  classified all 19 fixtures correctly in one call for $0.002573325.
+- See [pipeline guide](docs/PIPELINE.md) and [deployment record](docs/DEPLOYMENT.md).

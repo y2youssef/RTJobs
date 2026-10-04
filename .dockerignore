@@ -18,6 +18,9 @@ artifacts
 *.db-wal
 *.db-shm
 *.enrichment.lock
+*.delivery.lock
+*.monitor.lock
+*.scraper.lock
 *.log
 
 # Local browser profiles (Docker uses named volumes)

@@ -35,14 +35,23 @@ derive employer sector from job family or use sector as a routing category.
 | `job_enrichments` | State, schema/model version, independent classification axes, normalized `result_json`, usage and errors |
 | `enrichment_cache` | Reusable validated result keyed by relevant input content and model/contract version |
 | `enrichment_spend` | Daily request reservations reconciled with reported model costs |
+| `scrape_batches` | Start/end boundaries for one cycle across all enabled boards |
+| `enrichment_requests` | One row per whole-batch request, submitted IDs and shared usage/cost |
+| `pipeline_state` / `pipeline_alerts` | Worker heartbeats, provider pauses and deduplicated local alerts |
 | `seen_ids` | Source-specific scrape deduplication |
 | `runs` / `scrape_health` | Scraping outcomes and observed parser-health episodes |
 
-New jobs enter `pending`, then become `ready` after validation. Exhausted retries
-or budget can produce `fallback`: Other/Low/review with no invented facts. Old
+New jobs enter `pending`, then become `ready` after whole-response validation.
+Provider/network failures stay pending; exhausted budget waits until the next
+local day. New failures never produce an Other classification. Historical
+`fallback` rows remain auditable; undelivered current-schema fallbacks retry. Old
 industry-schema results become `obsolete`; they are not silently reinterpreted.
 Migration does not queue the historical corpus. Successful delivery updates
-`jobs.notified`; delivery status does not decide analytics eligibility.
+`jobs.notified` and `jobs.notified_at`; delivery status does not decide analytics eligibility.
+
+For batch request costs, sum `enrichment_requests.usage_json` once per request.
+Individual new enrichment rows reference the request ID and batch size; they do
+not duplicate shared usage. Old per-job usage belongs to the pre-batch rollout.
 
 For extracted market statistics, include only:
 

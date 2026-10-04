@@ -10,7 +10,9 @@ config.py                single source of truth (env vars)
 core/
   db.py                  SQLite: jobs, seen_ids, runs, login_state
   classify.py            strict OpenRouter extraction and local validation
-  enrichment_worker.py   optional SQLite enrichment queue + channel delivery
+  enrichment_worker.py   whole-cycle classification in one model request
+  delivery_worker.py     independent Telegram delivery
+  pipeline_monitor.py    local pipeline alerts
   telegram.py            job notifications + failure alerts
   markup.py              sanitized HTML snapshots for selector debugging
   login_state.py         retry/cooldown/profile-wipe logic
@@ -55,7 +57,7 @@ LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS=30
 LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS=20 # one longer detail retry
 MAX_SNAPSHOTS_PER_KIND=20
 KILL_CHROME_ON_START=false    # docker: true
-HEALTHCHECK_URL=              # optional dead-man ping (healthchecks.io) at end of each run
+HEALTHCHECK_URL=              # optional external heartbeat sent by monitor only when pipeline checks pass
 LINKEDIN_ENABLED=true
 WUZZUF_ENABLED=true
 INDEED_ENABLED=false          # see INDEED.md
@@ -235,9 +237,12 @@ rollout, active settings and rollback image.
 
 Scraping always saves the original parsed job to `jobs` first. When enabled,
 the same transaction creates a `job_enrichments` row in the **same SQLite DB**.
-A separate browser-free worker processes those pending rows and saves validated
-JSON alongside the raw job. No Redis or second database is required. The worker
-owns delivery of enriched jobs; the scraper continues its six-minute schedule.
+A browser-free classifier waits for the complete scrape cycle, then sends every
+uncached new job together in **one OpenRouter completion request**, without a
+25-job cutoff. Results are validated together and saved individually alongside
+the raw jobs. A separate delivery worker posts ready jobs while the classifier
+handles later cycles. The scraper keeps its six-minute schedule.
+See [the pipeline guide](docs/PIPELINE.md) for timing, retries and local monitoring.
 
 Two caches reduce cost:
 
@@ -257,23 +262,26 @@ CLASSIFIED_DELIVERY_ENABLED=false
 OPENROUTER_API_KEY=           # existing OPENROUTER_API is accepted too
 CLASSIFIER_MODEL=openai/gpt-6-luna
 CLASSIFIER_DAILY_BUDGET_USD=1
-CLASSIFIER_TIMEOUT_SECONDS=45
-CLASSIFIER_MAX_OUTPUT_TOKENS=2200
-CLASSIFIER_MAX_INPUT_CHARS=24000
-CLASSIFIER_MAX_ATTEMPTS=3
-ENRICHMENT_BATCH_SIZE=25
+CLASSIFIER_TIMEOUT_SECONDS=300
+CLASSIFIER_MAX_OUTPUT_TOKENS=2200  # allowance per job, scaled for the whole batch
+CLASSIFIER_MAX_INPUT_CHARS=0      # preserve full relevant source input
+CLASSIFIER_ALERT_AFTER_FAILURES=3
+CLASSIFIER_RETRY_MAX_SECONDS=3600
 ENRICHMENT_POLL_SECONDS=30
 NOTIFY_BATCH_SIZE=50
 NOTIFY_PER_CHANNEL_LIMIT=20
+DELIVERY_POLL_SECONDS=2
 TELEGRAM_CHANNELS_JSON=       # required complete JSON family-to-ID map for classified delivery
 ```
 
 Before each paid request, the worker reserves a conservative amount against its
 local-day budget, then reconciles it with returned usage cost. Failed or timed-out
 requests retain their reservation because billing is uncertain. Retries use
-persistent backoff. Exhausted budget or retries produce an explicit fallback
-record routed to Other (or the legacy channel if unmapped), without deleting the
-job. Long model inputs are flagged and truncated; raw SQLite text stays intact.
+persistent backoff, without a terminal fallback. Network/provider failures remain
+pending and budget exhaustion waits until the next local day. Neither is routed
+to Other. Full relevant input is preserved by default. Provider-limit or malformed
+responses keep the whole outstanding batch pending; no silent splitting into
+single-job requests. Request cost is recorded once in `enrichment_requests`.
 
 Preview a JSON list of raw jobs without saving those jobs or sending Telegram
 messages; use a scratch data directory because the spend ledger is still recorded:
@@ -285,12 +293,12 @@ DATA_DIR=/tmp/rtjobs-preview MARKUP_DIR="$PWD/markup" LOG_FILE='' \
 ```
 
 When activation is explicitly requested, set both `ENRICHMENT_ENABLED=true` and
-`CLASSIFIED_DELIVERY_ENABLED=true` in `.env` for both services, verify every
+`CLASSIFIED_DELIVERY_ENABLED=true` in `.env` for the scraper and workers, verify every
 channel ID/title and bot posting permission, then run:
 
 ```bash
 docker compose --profile enrichment up -d --build
-docker compose logs -f enrichment
+docker compose logs -f enrichment delivery monitor
 ```
 
 Check permissions beforehand with `.venv/bin/python scripts/check_channels.py`.
@@ -303,7 +311,7 @@ Deploy between scraper runs: stop the scheduler and let an active scraper finish
 before recreating it, then restart the scheduler. A browser-free worker can also
 run once with `python -m core.enrichment_worker --once --no-send` for inspection.
 Do not enable the scraper's flag without starting the worker, or new jobs will
-wait in the queue. Stop the worker and recreate the scraper with the flag false
+wait in the queue. Stop both workers and recreate the scraper with the flag false
 to return to legacy delivery. Pending enriched deliveries then use the legacy
 channel unless a destination was already saved by an earlier attempt.
 
@@ -366,7 +374,7 @@ passing a channel check alone does not activate them.
 | Chrome won't start in container | Profile lock from a crash: `KILL_CHROME_ON_START=true` handles it; otherwise `docker compose down && docker compose up -d`. |
 | Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead and heavy resources are dropped (see `core/browser.py:patch_no_load_wait`). |
 | Login keeps failing after site change | Check the newest `markup/linkedin/snapshots/login_failure/*.html` and update `selectors.json`. |
-| Silent "runs stopped" (no jobs, no alerts) | Set `HEALTHCHECK_URL` (healthchecks.io) — `main.py` pings it on success; configure dead-man alert there. |
+| Silent "runs stopped" (no jobs, no alerts) | Check the local `monitor` service. For host-wide outages, configure an external service through `HEALTHCHECK_URL`; the monitor pings only when pipeline checks pass. |
 | Full `jobs` table growing large | By design now uncapped (no `MAX_JOBS` prune) — use `DELETE FROM jobs WHERE ...` or rotate `rtjobs.db` volume if needed. `seen_ids` keeps dedupe forever. |
 
 Job-family analytics are computed outside the model by `core/analytics.py`.

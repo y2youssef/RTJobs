@@ -15,6 +15,11 @@ from config import (MARKUP_DIR, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, CLASSIF
 class EnrichmentError(RuntimeError):
     """An unavailable provider or an invalid model response; safe to retry."""
 
+    def __init__(self, message: str, status_code: int | None = None, usage: dict | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.usage = usage or {}
+
 
 class Enricher:
     def __init__(self):
@@ -26,6 +31,8 @@ class Enricher:
         self.version = hashlib.sha256((self.prompt + json.dumps(self.schema, sort_keys=True)).encode()).hexdigest()[:16]
         self.session = requests.Session()
         self.pricing = None
+        self.max_completion_tokens = None
+        self.context_length = None
 
     def close(self):
         self.session.close()
@@ -48,12 +55,11 @@ class Enricher:
         data = {"source": job.get("source"), "title": job.get("title"), "company": job.get("company"),
                 "description": job.get("description") or "",
                 "extra": {k: extra[k] for k in fields if k in extra}}
-        # Bound the whole model input, not just the main description. Raw SQLite
-        # data is retained intact. Keep both ends of long text (requirements are
-        # often at the end), explicitly telling the model about the cut.
+        # Preserve full relevant input by default. An explicit operator cap
+        # keeps both ends and marks the cut; raw SQLite data is never altered.
         full_input = json.dumps(data, ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256((CLASSIFIER_MODEL + self.version + full_input).encode()).hexdigest()
-        if len(full_input) > CLASSIFIER_MAX_INPUT_CHARS:
+        if CLASSIFIER_MAX_INPUT_CHARS and len(full_input) > CLASSIFIER_MAX_INPUT_CHARS:
             allowance = max(0, CLASSIFIER_MAX_INPUT_CHARS - len(json.dumps(data["extra"], ensure_ascii=False)) - 2000)
             text = data["description"]
             head = allowance * 2 // 3
@@ -65,16 +71,22 @@ class Enricher:
         data["id"] = job["id"]
         return data, digest
 
-    def payload(self, data: dict) -> dict:
+    def payload(self, data: dict | list[dict]) -> dict:
+        jobs = [data] if isinstance(data, dict) else data
+        if not jobs:
+            raise EnrichmentError("An enrichment request must contain jobs")
+        output_tokens = CLASSIFIER_MAX_OUTPUT_TOKENS * len(jobs)
+        if self.max_completion_tokens:
+            output_tokens = min(output_tokens, self.max_completion_tokens)
         return {"model": CLASSIFIER_MODEL,
                 "messages": [{"role": "system", "content": self.prompt},
-                             {"role": "user", "content": json.dumps({"jobs": [data]}, ensure_ascii=False)}],
-                "max_tokens": CLASSIFIER_MAX_OUTPUT_TOKENS,
+                             {"role": "user", "content": json.dumps({"jobs": jobs}, ensure_ascii=False)}],
+                "max_tokens": output_tokens,
                 "provider": {"require_parameters": True},
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": "rtjobs_enrichment", "strict": True, "schema": self.schema}}}
 
-    def request_bound(self, data: dict) -> float:
+    def request_bound(self, data: dict | list[dict]) -> float:
         """Conservative per-request reservation, using advertised model prices.
 
         UTF-8 bytes bound input tokens; doubling the estimate leaves room for
@@ -87,14 +99,29 @@ class Enricher:
             model = next((m for m in response.json()["data"] if m["id"] == CLASSIFIER_MODEL), None)
             if not model:
                 raise EnrichmentError(f"Unknown OpenRouter model: {CLASSIFIER_MODEL}")
+            self.max_completion_tokens = (model.get("top_provider") or {}).get("max_completion_tokens")
+            self.context_length = model.get("context_length")
             self.pricing = {k: float(model["pricing"].get(k) or 0) for k in ("prompt", "completion", "request")}
+            # Long-context tiers can cost more. Reserve against every advertised
+            # tier rather than rejecting a whole cycle at the base-price ceiling.
+            for tier in model['pricing'].get('overrides', []):
+                for key in self.pricing:
+                    if tier.get(key) is not None:
+                        self.pricing[key] = max(self.pricing[key], float(tier[key]))
             if any(not math.isfinite(v) or v < 0 for v in self.pricing.values()):
                 raise EnrichmentError("Invalid provider pricing")
-        input_bytes = len(json.dumps(self.payload(data), ensure_ascii=False).encode()) + 1024
+        payload = self.payload(data)
+        input_bytes = len(json.dumps(payload, ensure_ascii=False).encode()) + 1024
         return 2 * (input_bytes * self.pricing["prompt"] +
-                    CLASSIFIER_MAX_OUTPUT_TOKENS * self.pricing["completion"] + self.pricing["request"])
+                    payload["max_tokens"] * self.pricing["completion"] + self.pricing["request"])
 
     def classify(self, data: dict) -> tuple[dict, dict]:
+        """Compatibility helper for an explicitly requested single-job preview."""
+        results, usage = self.classify_batch([data])
+        return results[0], usage
+
+    def classify_batch(self, data: list[dict]) -> tuple[list[dict], dict]:
+        """One completion request for the complete supplied scrape batch."""
         if not OPENROUTER_API_KEY:
             raise EnrichmentError("OpenRouter API key is missing")
         payload = self.payload(data)
@@ -106,17 +133,19 @@ class Enricher:
             headers={"Authorization": "Bearer " + OPENROUTER_API_KEY},
             json=payload, timeout=CLASSIFIER_TIMEOUT_SECONDS)
         if not response.ok:
-            raise EnrichmentError(f"OpenRouter HTTP {response.status_code}")
+            raise EnrichmentError(f"OpenRouter HTTP {response.status_code}", response.status_code)
+        usage = {}
         try:
             envelope = response.json()
+            usage = envelope.get("usage") or {}
             choice = envelope["choices"][0]
             if choice.get("finish_reason") != "stop":
-                raise EnrichmentError("Model output did not finish normally")
+                raise EnrichmentError("Whole-batch output did not finish normally; no results accepted", usage=usage)
             batch = json.loads(choice["message"]["content"])
-            results = self.validate_batch(batch, [data["id"]])
-            return results[0], envelope.get("usage") or {}
+            results = self.validate_batch(batch, [job["id"] for job in data])
+            return results, usage
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise EnrichmentError(f"Invalid enrichment: {exc}") from exc
+            raise EnrichmentError(f"Invalid enrichment: {exc}", usage=usage) from exc
 
     def validate(self, result: dict, job_id: int):
         """Reject invalid output without rewriting evidence or inferred seniority."""

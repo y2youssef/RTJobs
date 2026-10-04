@@ -19,6 +19,9 @@ login_retries.json
 *.db-wal
 *.db-shm
 *.enrichment.lock
+*.delivery.lock
+*.monitor.lock
+*.scraper.lock
 markup/*/snapshots/
 logs/
 *.log

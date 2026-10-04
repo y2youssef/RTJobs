@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, ENRICHMENT_SCHEMA_VERSION,
-                    NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT)
+                    NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT, CLASSIFIER_RETRY_MAX_SECONDS)
+
+_active_scrape_batch = None  # Set only by this process's orchestrator.
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -88,6 +90,36 @@ CREATE TABLE IF NOT EXISTS scrape_health (
     last_alert_at TEXT,
     PRIMARY KEY (source, check_name)
 );
+CREATE TABLE IF NOT EXISTS pipeline_state (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pipeline_alerts (
+    check_name TEXT PRIMARY KEY,
+    failing INTEGER NOT NULL,
+    detail TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_alert_at TEXT,
+    next_alert_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS scrape_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running'
+);
+CREATE TABLE IF NOT EXISTS enrichment_requests (
+    request_id TEXT PRIMARY KEY,
+    batch_id INTEGER,
+    job_ids TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    state TEXT NOT NULL DEFAULT 'running',
+    usage_json TEXT,
+    error TEXT
+);
 """
 
 
@@ -115,6 +147,7 @@ def init_db():
             "notify_attempts": "INTEGER NOT NULL DEFAULT 0",
             "next_notify_at": "TEXT NOT NULL DEFAULT ''",
             "destination_chat_id": "TEXT",
+            "notified_at": "TEXT",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
@@ -123,20 +156,37 @@ def init_db():
             "job_family": "TEXT", "specialization": "TEXT", "employer_sector": "TEXT",
             "routing_confidence": "TEXT", "needs_review": "INTEGER",
             "schema_version": "TEXT NOT NULL DEFAULT ''",
+            "created_at": "TEXT",
+            "batch_id": "INTEGER",
         }.items():
             if name not in enrichment_columns:
                 conn.execute(f"ALTER TABLE job_enrichments ADD COLUMN {name} {definition}")
+        if 'batch_id' not in {row['name'] for row in conn.execute('PRAGMA table_info(runs)')}:
+            conn.execute('ALTER TABLE runs ADD COLUMN batch_id INTEGER')
         # Keep previous results for audit; never reinterpret an industry as a
         # profession or enqueue a paid historical reclassification implicitly.
         conn.execute("UPDATE job_enrichments SET state='obsolete' "
                      "WHERE state IN ('ready','fallback') AND schema_version != ?",
                      (ENRICHMENT_SCHEMA_VERSION,))
+        conn.execute("UPDATE job_enrichments SET created_at=COALESCE("
+                     "(SELECT scraped_at FROM jobs WHERE jobs.id=job_id), updated_at, ?) "
+                     "WHERE created_at IS NULL", (now_str(),))
+        # Recover only unfinished operational fallbacks from the current
+        # contract. Already delivered jobs are never resent by this migration.
+        conn.execute("UPDATE jobs SET destination_chat_id=NULL WHERE notified=0 AND id IN "
+                     "(SELECT job_id FROM job_enrichments WHERE state='fallback' AND schema_version=?)",
+                     (ENRICHMENT_SCHEMA_VERSION,))
+        conn.execute("UPDATE job_enrichments SET state='pending',next_attempt_at='' "
+                     "WHERE state='fallback' AND schema_version=? AND job_id IN "
+                     "(SELECT id FROM jobs WHERE notified=0)", (ENRICHMENT_SCHEMA_VERSION,))
         conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_family_sector "
                      "ON job_enrichments(schema_version, job_family, employer_sector)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_pending_source "
                      "ON jobs(source, posted_at, id) WHERE notified = 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_pending "
                      "ON jobs(posted_at, id) WHERE notified = 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_source_id ON runs(source,id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_batch ON job_enrichments(batch_id,state)")
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +236,8 @@ def save_jobs(jobs: list[dict], blocked: list[tuple[str, str]] | None = None,
             if cur.rowcount:
                 inserted += 1
                 if enqueue:
-                    conn.execute("INSERT INTO job_enrichments (job_id, country, updated_at) VALUES (?, ?, ?)",
-                                 (cur.lastrowid, job.get("country") or "EG", now_str()))
+                    conn.execute("INSERT INTO job_enrichments (job_id, country, updated_at, created_at, batch_id) VALUES (?, ?, ?, ?, ?)",
+                                 (cur.lastrowid, job.get("country") or "EG", now_str(), now_str(), _active_scrape_batch))
         ids = [(j["source"], str(j["external_id"])) for j in jobs]
         ids.extend(blocked or [])
         conn.executemany("INSERT OR IGNORE INTO seen_ids (source, external_id) VALUES (?, ?)", ids)
@@ -233,7 +283,7 @@ def get_unnotified(source: str | None = None, limit: int = NOTIFY_BATCH_SIZE) ->
         where = "j.notified = 0 AND j.next_notify_at <= ?"
         args = [now_str()]
         if ENRICHMENT_ENABLED:
-            where += " AND (e.job_id IS NULL OR (e.state IN ('ready','fallback') AND e.schema_version=?))"
+            where += " AND (e.job_id IS NULL OR (e.state='ready' AND e.schema_version=?))"
             args.append(ENRICHMENT_SCHEMA_VERSION)
         if source:
             where += " AND j.source = ?"
@@ -251,7 +301,7 @@ def get_unnotified(source: str | None = None, limit: int = NOTIFY_BATCH_SIZE) ->
 
 def mark_notified(job_id: int):
     with get_db() as conn:
-        conn.execute("UPDATE jobs SET notified = 1 WHERE id = ?", (job_id,))
+        conn.execute("UPDATE jobs SET notified = 1,notified_at=? WHERE id = ?", (now_str(), job_id))
 
 
 def set_destination(job_id: int, chat_id: str):
@@ -279,6 +329,62 @@ def pending_enrichments(limit: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def pending_enrichment_batch() -> list[sqlite3.Row]:
+    """Select every pending job from one finished cycle, with no count cap.
+
+    Pre-migration queued rows (NULL batch_id) form one legacy queue batch. A
+    retry never silently sends only the due subset of a partially deferred batch.
+    """
+    with get_db() as conn:
+        batch = conn.execute("SELECT e.batch_id FROM job_enrichments e "
+            "LEFT JOIN scrape_batches b ON b.id=e.batch_id WHERE e.state='pending' "
+            "AND (e.batch_id IS NULL OR b.status!='running') GROUP BY e.batch_id "
+            "HAVING MAX(e.next_attempt_at)<=? ORDER BY MIN(e.created_at),MIN(e.job_id) LIMIT 1",
+            (now_str(),)).fetchone()
+        if batch is None:
+            return []
+        return conn.execute("SELECT j.*,e.attempts,e.batch_id FROM job_enrichments e "
+            "JOIN jobs j ON j.id=e.job_id WHERE e.state='pending' AND e.batch_id IS ? ORDER BY e.job_id",
+            (batch[0],)).fetchall()
+
+
+def start_scrape_batch() -> int:
+    global _active_scrape_batch
+    with get_db() as conn:
+        # Ofelia serializes scraper processes. A previous unfinished cycle was
+        # interrupted; release its already-saved jobs without mixing cycles.
+        conn.execute("UPDATE scrape_batches SET status='interrupted',finished_at=? WHERE status='running'", (now_str(),))
+        row = conn.execute("INSERT INTO scrape_batches(started_at) VALUES (?)", (now_str(),))
+        _active_scrape_batch = row.lastrowid
+    return _active_scrape_batch
+
+
+def finish_scrape_batch(batch_id: int, interrupted: bool = False):
+    global _active_scrape_batch
+    with get_db() as conn:
+        statuses = [row[0] for row in conn.execute('SELECT status FROM runs WHERE batch_id=?', (batch_id,))]
+        status = 'interrupted' if interrupted else ('ok' if all(value == 'ok' for value in statuses) else 'degraded')
+        conn.execute('UPDATE scrape_batches SET status=?,finished_at=? WHERE id=?', (status, now_str(), batch_id))
+    _active_scrape_batch = None
+
+
+def start_enrichment_request(request_id: str, batch_id: int | None, job_ids: list[int]):
+    with get_db() as conn:
+        conn.execute('INSERT INTO enrichment_requests(request_id,batch_id,job_ids,started_at) VALUES (?,?,?,?)',
+                     (request_id, batch_id, json.dumps(job_ids), now_str()))
+
+
+def finish_enrichment_request(request_id: str, usage: dict, error: str = ''):
+    with get_db() as conn:
+        conn.execute('UPDATE enrichment_requests SET state=?,finished_at=?,usage_json=?,error=? WHERE request_id=?',
+                     ('failed' if error else 'ready', now_str(), json.dumps(usage), error, request_id))
+
+
+def forget_cached_enrichment(input_hash: str):
+    with get_db() as conn:
+        conn.execute('DELETE FROM enrichment_cache WHERE input_hash=?', (input_hash,))
+
+
 def cached_enrichment(input_hash: str) -> dict | None:
     with get_db() as conn:
         row = conn.execute("SELECT result_json FROM enrichment_cache WHERE input_hash=?", (input_hash,)).fetchone()
@@ -286,27 +392,68 @@ def cached_enrichment(input_hash: str) -> dict | None:
 
 
 def finish_enrichment(job_id: int, result: dict, input_hash: str, model: str,
-                      version: str, fallback: bool = False, error: str = "", usage: dict | None = None):
+                      version: str, fallback: bool = False, error: str = "", usage: dict | None = None,
+                      connection=None):
+    if connection is None:
+        with get_db() as conn:
+            return finish_enrichment(job_id, result, input_hash, model, version, fallback, error, usage, conn)
     payload = json.dumps(result, ensure_ascii=False)
     classification = result["classification"]
+    conn = connection
+    conn.execute("UPDATE job_enrichments SET state=?, job_family=?, specialization=?, employer_sector=?,"
+                 " routing_confidence=?, needs_review=?, schema_version=?, result_json=?, input_hash=?,"
+                 " model=?, version=?, error=?, usage_json=?, updated_at=? WHERE job_id=?",
+                 ("fallback" if fallback else "ready", classification["job_family"],
+                  classification["specialization"], classification["employer_sector"],
+                  classification["routing_confidence"], int(classification["needs_review"]), ENRICHMENT_SCHEMA_VERSION,
+                  payload, input_hash, model, version, error, json.dumps(usage or {}), now_str(), job_id))
+    if not fallback:
+        conn.execute("INSERT OR REPLACE INTO enrichment_cache VALUES (?, ?, ?)",
+                     (input_hash, payload, now_str()))
+
+def finish_enrichment_batch(entries: list[dict], model: str, version: str,
+                            request_id: str | None = None, usage: dict | None = None):
+    """Publish a fully validated response atomically to the delivery worker."""
     with get_db() as conn:
-        conn.execute("UPDATE job_enrichments SET state=?, job_family=?, specialization=?, employer_sector=?,"
-                     " routing_confidence=?, needs_review=?, schema_version=?, result_json=?, input_hash=?,"
-                     " model=?, version=?, error=?, usage_json=?, updated_at=? WHERE job_id=?",
-                     ("fallback" if fallback else "ready", classification["job_family"],
-                      classification["specialization"], classification["employer_sector"],
-                      classification["routing_confidence"], int(classification["needs_review"]), ENRICHMENT_SCHEMA_VERSION,
-                      payload, input_hash, model, version, error, json.dumps(usage or {}), now_str(), job_id))
-        if not fallback:
-            conn.execute("INSERT OR REPLACE INTO enrichment_cache VALUES (?, ?, ?)",
-                         (input_hash, payload, now_str()))
+        for entry in entries:
+            finish_enrichment(entry['job_id'], entry['result'], entry['input_hash'], model,
+                              version, usage=entry.get('usage'), connection=conn)
+        if request_id:
+            conn.execute("UPDATE enrichment_requests SET state='ready',finished_at=?,usage_json=? WHERE request_id=?",
+                         (now_str(), json.dumps(usage or {}), request_id))
 
 
-def retry_enrichment(job_id: int, attempts: int, error: str):
-    retry_at = (datetime.now() + timedelta(seconds=min(3600, 60 * 2 ** attempts))).strftime("%Y-%m-%d %H:%M:%S")
+def retry_enrichment_batch(jobs: list[dict], error: str, retry_at: str, attempted: bool):
+    """Defer a cycle atomically so restart cannot pick a partially updated batch."""
+    with get_db() as conn:
+        conn.executemany("UPDATE job_enrichments SET attempts=?,next_attempt_at=?,error=?,updated_at=? WHERE job_id=?",
+                         [(job.get('attempts', 0) + int(attempted), retry_at, error, now_str(), job['id']) for job in jobs])
+
+
+def retry_enrichment(job_id: int, attempts: int, error: str, retry_at: str | None = None):
+    retry_at = retry_at or (datetime.now() + timedelta(seconds=min(
+        CLASSIFIER_RETRY_MAX_SECONDS, 60 * 2 ** min(attempts, 10)))).strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
         conn.execute("UPDATE job_enrichments SET attempts=?, next_attempt_at=?, error=?, updated_at=? WHERE job_id=?",
                      (attempts, retry_at, error, now_str(), job_id))
+    return retry_at
+
+
+def set_pipeline_state(name: str, value: dict):
+    with get_db() as conn:
+        conn.execute("INSERT INTO pipeline_state VALUES (?,?,?) ON CONFLICT(name) DO UPDATE "
+                     "SET value=excluded.value,updated_at=excluded.updated_at",
+                     (name, json.dumps(value), now_str()))
+
+
+def get_pipeline_state(name: str) -> dict:
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM pipeline_state WHERE name=?", (name,)).fetchone()
+    return json.loads(row[0]) if row else {}
+
+
+def touch_worker(name: str, phase: str):
+    set_pipeline_state("worker:" + name, {"phase": phase})
 
 
 def reserve_enrichment_spend(day: str, amount: float, budget: float) -> bool:
@@ -334,8 +481,8 @@ def reconcile_enrichment_spend(day: str, reserved: float, actual: float):
 def start_run(source: str) -> int:
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO runs (source, status, started_at) VALUES (?, 'running', ?)",
-            (source, now_str()),
+            "INSERT INTO runs (source, status, started_at,batch_id) VALUES (?, 'running', ?,?)",
+            (source, now_str(), _active_scrape_batch),
         )
         return cur.lastrowid
 

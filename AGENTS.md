@@ -27,7 +27,9 @@ main.py                  orchestrator; BOARDS list; --reset-login
 config.py                ALL env config (single source of truth)
 core/db.py               SQLite: raw jobs, dedupe, runs, enrichment/cache/spend, scrape_health
 core/scrape_health.py    parser checks + persistent error-channel alert dedupe
-core/enrichment_worker.py optional browser-free OpenRouter worker (default disabled)
+core/enrichment_worker.py whole-cycle OpenRouter batches (default disabled)
+core/delivery_worker.py   independent classified Telegram delivery
+core/pipeline_monitor.py  local heartbeat/queue/budget alerts
 core/telegram.py         notify_jobs (jobs channel) / notify_failure (alert channel)
 core/markup.py           sanitized HTML snapshots -> markup/<site>/snapshots/<kind>/
 core/login_state.py      LinkedIn retry counter + escalating cooldown (5m/15m/30m)
@@ -268,3 +270,18 @@ Set dummy env before importing config in test scripts:
 - Snapshots strip script tags, but hidden `<code>` elements can retain embedded
   account JSON. Keep them local; never paste account state into Telegram or
   commit authenticated page captures. Use minimal fixtures for offline checks.
+
+## Whole-cycle batching and local monitoring (2026-10-04)
+- User requires every uncached job from one completed scrape cycle in ONE
+  completion request, with no 25-job cap. `scrape_batches` links all boards;
+  `main.py` owns the cycle boundary and scraper lock. Never classify mid-cycle.
+- `enrichment_requests` records shared usage once. Validate exact output IDs and
+  cardinality before atomic publication. No automatic single-job splitting.
+- Network, provider, schema and budget failures stay pending; never fabricate
+  Other. Retry indefinitely with bounded delay; reserve cost before each call.
+- `delivery` is separate from `enrichment`; both flags still gate posting.
+  Each worker owns its process lock. `monitor` independently sends deduplicated
+  local alerts; external outage monitoring is explicitly deferred by the user.
+- Run `scripts/verify_pipeline.py` (also included in verify_offline.py) for the
+  >25-job single-request test, cycle boundaries, failures, cost accounting,
+  concurrent delivery and alert deduplication. See docs/PIPELINE.md.

@@ -1,5 +1,6 @@
 """RTJobs orchestrator: run every enabled job board, persist jobs, notify."""
 
+import fcntl
 import logging
 import signal
 import sys
@@ -9,7 +10,7 @@ from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
 from core import db, login_state
 from core.log import setup_logging
-from config import ENRICHMENT_ENABLED
+from config import DB_PATH, ENRICHMENT_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,26 @@ def main() -> int:
 
     db.init_db()
 
+    # Serialize manual runs too: a cycle must never close another live scrape.
+    with open(DB_PATH + '.scraper.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info('Another scrape cycle is active')
+            return 0
+        batch_id = db.start_scrape_batch()
+        interrupted = True
+        try:
+            db.touch_worker('scraper', 'scraping')
+            result = _run_boards()
+            interrupted = False
+            return result
+        finally:
+            db.finish_scrape_batch(batch_id, interrupted=interrupted)
+            db.touch_worker('scraper', 'idle')
+
+
+def _run_boards() -> int:
     total_new = 0
     for board_cls in BOARDS:
         # Check the class attribute FIRST so a disabled board can never
@@ -75,6 +96,7 @@ def main() -> int:
                                     hint="Restore markup/<board>/selectors.json before the next run.")
             sys.exit(1)
 
+        db.touch_worker("scraper", board.name)
         logger.info("Running board: %s", board.name)
         try:
             total_new += board.run()
@@ -98,20 +120,6 @@ def main() -> int:
                 raise SystemExit(0)
 
     logger.info("Done. New jobs this run: %s", total_new)
-
-    # Dead-man ping (healthchecks.io / Uptime Kuma). Set HEALTHCHECK_URL in
-    # .env to enable; failure to ping never fails the run.
-    if not _shutting_down:
-        try:
-            from config import HEALTHCHECK_URL
-
-            if HEALTHCHECK_URL:
-                import requests
-
-                requests.get(HEALTHCHECK_URL, timeout=10)
-                logger.info("Healthcheck ping succeeded")
-        except Exception as e:
-            logger.warning("Healthcheck ping failed (non-fatal): %s", type(e).__name__)
 
     return 0
 

@@ -25,7 +25,7 @@ def main():
                           CLASSIFIED_DELIVERY_ENABLED='false', LOG_FILE='')
         from core import db, telegram
         from core.classify import Enricher
-        from core.enrichment_worker import process_job
+        from core.enrichment_worker import process_batch
         def forbidden(*a,**kw):raise AssertionError('Telegram forbidden in classifier evaluation')
         telegram._send = telegram._api = forbidden
         db.init_db()
@@ -39,16 +39,17 @@ def main():
         if args.limit: cases = cases[:args.limit]
         report = {'version':client.version, 'schema_version':client.taxonomy['schema_version'], 'cases':[], 'cost_usd':0}
         try:
-            for case in cases:
-                row = process_job(client, case['job'], preview=True)
+            batch = process_batch(client, [case['job'] for case in cases], preview=True)
+            report.update(usage=batch['usage'], api_calls=batch['api_calls'], cost_usd=batch['usage'].get('cost') or 0)
+            for case, row in zip(cases, batch['jobs'], strict=True):
                 failures = []
                 for path, expected in case['expected'].items():
                     actual = row['result']
-                    for key in path.split('.'):actual = actual[key]
+                    for key in path.split('.'):
+                        actual = actual.get(key) if isinstance(actual, dict) else None
                     if actual != expected:failures.append({'path':path,'expected':expected,'actual':actual})
                 if row['error']:failures.append({'error':row['error']})
                 report['cases'].append({'name':case['name'], 'passed':not failures, 'failures':failures, **row})
-                report['cost_usd'] += row['usage'].get('cost') or 0
                 print('PASS' if not failures else 'FAIL',case['name'],json.dumps(failures),flush=True)
                 args.output.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
         finally:

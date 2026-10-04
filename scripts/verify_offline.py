@@ -10,6 +10,7 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack, nullcontext
@@ -31,6 +32,7 @@ def main():
             ENRICHMENT_ENABLED="true", CLASSIFIED_DELIVERY_ENABLED="true", TELEGRAM_CHANNELS_JSON="", LOG_FILE="")
         with patch("requests.sessions.Session.request", side_effect=AssertionError("Network forbidden")):
             verify(directory)
+    subprocess.run([sys.executable, str(ROOT / "scripts/verify_pipeline.py")], check=True)
     print("All offline checks passed.")
 
 
@@ -137,11 +139,12 @@ def verify(directory):
     assert db.save_jobs([base], enqueue=True) == 1
     row = dict(db.pending_enrichments(1)[0])
     assert all(r["id"] != row["id"] for r in db.get_unnotified())
-    def fake_classify(data):
+    def fake_classify(batch):
+        data = batch[0]
         result = client.fallback(data["id"])
         result["classification"].update(job_family="software_engineering", specialization="backend", routing_confidence="High", needs_review=False)
-        return result, {"total_tokens": 100, "cost": 0.001}
-    with patch.object(client, "request_bound", return_value=0.01), patch.object(client, "classify", side_effect=fake_classify) as call:
+        return [result], {"total_tokens": 100, "cost": 0.001}
+    with patch.object(client, "request_bound", return_value=0.01), patch.object(client, "classify_batch", side_effect=fake_classify) as call:
         first = process_job(client, row)
         assert first["state"] == "ready" and not first["cached"]
         assert call.call_count == 1
@@ -165,15 +168,16 @@ def verify(directory):
     assert not db.reserve_enrichment_spend("1900-01-01", 0.02, 0.01)
     assert db.reserve_enrichment_spend("1900-01-01", 0.009, 0.01)
     assert not db.reserve_enrichment_spend("1900-01-01", 0.002, 0.01)
-    # Retryable errors leave the raw row pending; the last retry explicitly falls back.
+    # Operational errors remain pending even after repeated failures.
     base.update(external_id="three", description="Unique retry job")
     db.save_jobs([base], enqueue=True)
     retry_row = dict(db.pending_enrichments(1)[0])
     with patch.object(client, "request_bound", side_effect=ValueError("provider unavailable")):
         assert process_job(client, retry_row)["state"] == "pending"
         retry_row["attempts"] = 2
-        assert process_job(client, retry_row)["state"] == "fallback"
-    print("PASS all 26 job-family routes, queue restart/cache, schema validation, budgets, retry/fallback")
+        db.set_pipeline_state("classifier", {})
+        assert process_job(client, retry_row)["state"] == "pending"
+    print("PASS all 26 job-family routes, queue restart/cache, schema validation, budgets, persistent retries")
 
     payloads = []
     responses = iter([SimpleNamespace(ok=False, status_code=400, text="parse error"), SimpleNamespace(ok=True)])

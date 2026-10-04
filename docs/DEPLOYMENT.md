@@ -13,8 +13,9 @@ commit: `7c912f0`. Image tag: `rtjobs-scraper:production-family-v2`.
 - All 26 unique family destinations configured in private `TELEGRAM_CHANNELS_JSON`.
 - API credentials, channel IDs and configurable API base URLs live in `.env`.
 - `ofelia` starts the one-shot scraper every six minutes. The separate
-  `enrichment` service continuously processes new SQLite queue rows and delivers
-  completed jobs. It runs without Chrome.
+  `enrichment` service classifies whole completed scrape cycles in one request.
+  `delivery` posts saved results independently; `monitor` checks local pipeline
+  health and alerts. All three services run without Chrome.
 
 Public `.env.example` keeps activation disabled and credentials/IDs blank.
 Historical jobs are not automatically queued or reclassified.
@@ -49,7 +50,7 @@ dependency validation and the repository credential/ID check.
 ## Operations
 
 ```bash
-docker compose logs --tail 50 enrichment
+docker compose logs --tail 50 enrichment delivery monitor
 docker logs --tail 50 ofelia
 ```
 
@@ -71,3 +72,29 @@ Then restart `ofelia`.
 Keep the current database during a code rollback; the migration is additive.
 The backup is available for deliberate database recovery, which must account
 for jobs saved since that backup. Do not reset notified flags or remove volumes.
+
+
+## Whole-cycle pipeline update — 2026-10-04
+
+The batching update sends all uncached jobs from one completed scrape cycle in
+one completion request, with no 25-job cap. Provider/budget failures stay pending
+and local monitoring alerts independently. See [PIPELINE.md](PIPELINE.md).
+
+Pre-deployment validation passed on Python 3.14 and container Python 3.13. The
+offline 37-job test verified a single completion request across multiple boards,
+exact/reordered IDs, incomplete-response rejection, shared billing, persistent
+retry and simultaneous delivery. All 19 live evaluation fixtures passed together
+in one completion request for $0.002573325. All 26 channel identities and bot
+posting permissions passed the read-only audit again.
+
+With production writers stopped, a read-only snapshot was saved under the
+gitignored `artifacts/whole-batch-20261004/` directory. Migration on a copy
+preserved all **39,084 raw jobs and delivery acknowledgements**, including an
+exact fingerprint of every original job field and notification flag. All 290
+existing enrichments remained ready; no historical rows were queued. SQLite
+quick_check passed.
+
+For this update, the previous production image remains
+`rtjobs-scraper:production-family-v2`. A rollback to that image requires stopping
+`delivery` and `monitor` as well as `enrichment` first: the previous classifier
+also sends messages itself. Keep the current SQLite database and delivery flags.

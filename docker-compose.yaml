@@ -50,8 +50,8 @@ services:
       ofelia.job-run.scraper.delete: "false"
 
   enrichment:
-    # Optional browser-free worker. Enable the env flag for BOTH services
-    # and start with: docker compose --profile enrichment up -d --build
+    # Browser-free pipeline services share SQLite, each with its own process lock.
+    # Start with: docker compose --profile enrichment up -d --build
     profiles: ["enrichment"]
     build: .
     image: rtjobs-scraper
@@ -67,7 +67,49 @@ services:
       - scraper_data:/data
       - ./markup:/data/markup:ro
     command: ["python", "-m", "core.enrichment_worker"]
-    stop_grace_period: 60s
+    stop_grace_period: 360s
+    restart: unless-stopped
+
+  delivery:
+    # Browser-free pipeline services share SQLite, each with its own process lock.
+    # Start with: docker compose --profile enrichment up -d --build
+    profiles: ["enrichment"]
+    build: .
+    image: rtjobs-scraper
+    init: true
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Africa/Cairo}
+      - DATA_DIR=/data
+      - LOG_FILE=/data/logs/delivery.log
+    volumes:
+      - scraper_data:/data
+      - ./markup:/data/markup:ro
+    command: ["python", "-m", "core.delivery_worker"]
+    stop_grace_period: 120s
+    restart: unless-stopped
+
+  monitor:
+    # Browser-free pipeline services share SQLite, each with its own process lock.
+    # Start with: docker compose --profile enrichment up -d --build
+    profiles: ["enrichment"]
+    build: .
+    image: rtjobs-scraper
+    init: true
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Africa/Cairo}
+      - DATA_DIR=/data
+      - LOG_FILE=/data/logs/monitor.log
+    volumes:
+      - scraper_data:/data
+      - ./markup:/data/markup:ro
+    command: ["python", "-m", "core.pipeline_monitor"]
+    stop_grace_period: 120s
     restart: unless-stopped
 
 volumes:

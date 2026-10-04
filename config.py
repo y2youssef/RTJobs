@@ -149,24 +149,44 @@ ENRICHMENT_SCHEMA_VERSION = "job_family_v2"
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 CLASSIFIER_MODEL = os.environ.get("CLASSIFIER_MODEL", "openai/gpt-6-luna")
-CLASSIFIER_TIMEOUT_SECONDS = int(os.environ.get("CLASSIFIER_TIMEOUT_SECONDS", "45"))
+CLASSIFIER_TIMEOUT_SECONDS = int(os.environ.get("CLASSIFIER_TIMEOUT_SECONDS", "300"))
 CLASSIFIER_MAX_OUTPUT_TOKENS = int(os.environ.get("CLASSIFIER_MAX_OUTPUT_TOKENS", "2200"))
-CLASSIFIER_MAX_INPUT_CHARS = int(os.environ.get("CLASSIFIER_MAX_INPUT_CHARS", "24000"))
+CLASSIFIER_MAX_INPUT_CHARS = int(os.environ.get("CLASSIFIER_MAX_INPUT_CHARS", "0"))
 CLASSIFIER_DAILY_BUDGET_USD = float(os.environ.get("CLASSIFIER_DAILY_BUDGET_USD", "1"))
 CLASSIFIER_MAX_ATTEMPTS = int(os.environ.get("CLASSIFIER_MAX_ATTEMPTS", "3"))
-ENRICHMENT_BATCH_SIZE = int(os.environ.get("ENRICHMENT_BATCH_SIZE", "25"))
+# MAX_ATTEMPTS remains a compatibility alias for the alert threshold, never a
+# terminal retry limit. Infrastructure failures stay pending indefinitely.
+CLASSIFIER_ALERT_AFTER_FAILURES = int(os.environ.get("CLASSIFIER_ALERT_AFTER_FAILURES", str(CLASSIFIER_MAX_ATTEMPTS)))
+CLASSIFIER_RETRY_MAX_SECONDS = int(os.environ.get("CLASSIFIER_RETRY_MAX_SECONDS", "3600"))
 ENRICHMENT_POLL_SECONDS = int(os.environ.get("ENRICHMENT_POLL_SECONDS", "30"))
 NOTIFY_BATCH_SIZE = int(os.environ.get("NOTIFY_BATCH_SIZE", "50"))
 NOTIFY_PER_CHANNEL_LIMIT = int(os.environ.get("NOTIFY_PER_CHANNEL_LIMIT", "20"))
 TELEGRAM_CHANNELS_JSON = os.environ.get("TELEGRAM_CHANNELS_JSON", "").strip()
+DELIVERY_POLL_SECONDS = int(os.environ.get("DELIVERY_POLL_SECONDS", "2"))
+PIPELINE_MONITOR_INTERVAL_SECONDS = int(os.environ.get("PIPELINE_MONITOR_INTERVAL_SECONDS", "60"))
+PIPELINE_QUEUE_STALE_SECONDS = int(os.environ.get("PIPELINE_QUEUE_STALE_SECONDS", "900"))
+PIPELINE_WORKER_STALE_SECONDS = int(os.environ.get("PIPELINE_WORKER_STALE_SECONDS", "900"))
+PIPELINE_SCRAPER_STALE_SECONDS = int(os.environ.get("PIPELINE_SCRAPER_STALE_SECONDS", "1800"))
+PIPELINE_DELIVERY_ALERT_ATTEMPTS = int(os.environ.get("PIPELINE_DELIVERY_ALERT_ATTEMPTS", "3"))
+PIPELINE_ALERT_RETRY_SECONDS = int(os.environ.get("PIPELINE_ALERT_RETRY_SECONDS", "300"))
+PIPELINE_STARTUP_GRACE_SECONDS = int(os.environ.get("PIPELINE_STARTUP_GRACE_SECONDS", "180"))
 
 # Reject invalid bounds before a worker can issue paid requests or busy-loop.
 for _name in ("CLASSIFIER_TIMEOUT_SECONDS", "CLASSIFIER_MAX_OUTPUT_TOKENS",
-              "CLASSIFIER_MAX_INPUT_CHARS", "CLASSIFIER_MAX_ATTEMPTS",
-              "ENRICHMENT_BATCH_SIZE", "ENRICHMENT_POLL_SECONDS",
+              "CLASSIFIER_MAX_ATTEMPTS",
+              "ENRICHMENT_POLL_SECONDS",
               "NOTIFY_BATCH_SIZE", "NOTIFY_PER_CHANNEL_LIMIT"):
+    if globals()[_name] <= 0:
+        raise ValueError(f"{_name} must be positive")
+for _name in ("CLASSIFIER_ALERT_AFTER_FAILURES", "CLASSIFIER_RETRY_MAX_SECONDS",
+              "DELIVERY_POLL_SECONDS", "PIPELINE_MONITOR_INTERVAL_SECONDS",
+              "PIPELINE_QUEUE_STALE_SECONDS", "PIPELINE_WORKER_STALE_SECONDS",
+              "PIPELINE_SCRAPER_STALE_SECONDS", "PIPELINE_DELIVERY_ALERT_ATTEMPTS",
+              "PIPELINE_ALERT_RETRY_SECONDS", "PIPELINE_STARTUP_GRACE_SECONDS"):
     if globals()[_name] <= 0:
         raise ValueError(f"{_name} must be positive")
 if not math.isfinite(CLASSIFIER_DAILY_BUDGET_USD) or CLASSIFIER_DAILY_BUDGET_USD < 0:
     raise ValueError("CLASSIFIER_DAILY_BUDGET_USD must be finite and nonnegative")
+if CLASSIFIER_MAX_INPUT_CHARS < 0:
+    raise ValueError("CLASSIFIER_MAX_INPUT_CHARS must be nonnegative (0 preserves full input)")
 del _name

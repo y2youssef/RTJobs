@@ -49,11 +49,11 @@ Other / Unclassified: [configured in .env]
 
 Route by `classification.job_family` only. Specialization must belong to that family. Low confidence and `other` require `needs_review=true`; `other` also requires Low confidence. Explicit contradictory evidence is flagged. Review flags are retained for inspection, and no posting is silently discarded.
 
-Raw fields stay in `jobs`; normalized enrichment stays in `job_enrichments` in the same SQLite database. The API processes one job per call inside the requested jobs-array envelope, avoiding cross-job contamination. Batch validation checks identity/cardinality and accepts reordered valid IDs without mixing results.
+Raw fields stay in `jobs`; normalized enrichment stays in `job_enrichments` in the same SQLite database. The classifier waits for all enabled boards to finish one scrape cycle, then sends all uncached new jobs in one completion request using the jobs-array envelope. There is no fixed job-count cap. Batch validation checks every identity and cardinality before atomic publication, accepting reordered valid IDs without mixing results. Telegram delivery has an independent worker.
 
 Explicit title seniority wins over experience. Salary, currency, work setup, languages, technologies, certifications and candidate restrictions are extracted only when supported. No hard_skills, soft_skills, domain_skills or global competencies ranking is produced. `posting_entity_type=unknown` is a valid enum; missing factual scalars use null.
 
-The schema and prompt change the result-cache namespace. Legacy industry results remain auditable as obsolete and are not eligible for family delivery. A migration does not enqueue old jobs. Failed model calls retry with bounded backoff and eventually create explicit Other/Low/review fallbacks, which are not cached as successful enrichment.
+The schema and prompt change the result-cache namespace. Legacy industry results remain auditable as obsolete and are not eligible for family delivery. A migration does not enqueue old jobs. Failed model calls retry with bounded backoff and remain pending indefinitely. Budget exhaustion pauses until the next local day. Neither produces an Other classification. Local pipeline monitoring alerts on repeated failures, budget pauses, stale workers and queues; see [the pipeline guide](docs/PIPELINE.md).
 
 ## Analytics outside the LLM
 

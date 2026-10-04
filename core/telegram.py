@@ -82,7 +82,7 @@ def _send(
     return False
 
 
-def notify_jobs(pending: list) -> int:
+def notify_jobs(pending: list, *, stop=None, progress=None) -> int:
     """Send one message per pending job row and mark it notified."""
     if ENRICHMENT_ENABLED and not CLASSIFIED_DELIVERY_ENABLED:
         logger.info("[telegram] Classified delivery is disabled; leaving jobs pending.")
@@ -94,6 +94,10 @@ def notify_jobs(pending: list) -> int:
         from core.classify import load_channels
         channels = load_channels(require_complete=True)
     for row in pending:
+        if stop is not None and stop.is_set():
+            break
+        if progress is not None:
+            progress()
         job = dict(row)
         chat_id = destination_for(job, channels)
         if counts.get(chat_id, 0) >= NOTIFY_PER_CHANNEL_LIMIT:
