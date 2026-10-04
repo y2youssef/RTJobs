@@ -285,3 +285,8 @@ Set dummy env before importing config in test scripts:
 - Run `scripts/verify_pipeline.py` (also included in verify_offline.py) for the
   >25-job single-request test, cycle boundaries, failures, cost accounting,
   concurrent delivery and alert deduplication. See docs/PIPELINE.md.
+
+- Whole-cycle update deployed at 23:06 Cairo (application `771d456`). First live
+  cycle: 8 jobs in one completion request, 8 correctly delivered, all boards ok,
+  monitor healthy. Image `rtjobs-scraper:production-whole-batch-20261004`; prior
+  `production-family-v2` is retained. See docs/DEPLOYMENT.md for exact timings.

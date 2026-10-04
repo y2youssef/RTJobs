@@ -16,7 +16,8 @@ The scheduler starts a scrape every six minutes. Each board persists new jobs as
 it goes; source IDs deduplicate repeated scrapes. Raw descriptions are never
 replaced with AI output. Historical raw jobs are not automatically classified.
 
-The classifier waits for the complete cycle across enabled boards. Every
+The classifier polls SQLite every 30 seconds and waits for the complete cycle
+across enabled boards. Every
 uncached new job from that cycle goes into **one completion request**, with no
 25-job cutoff. An empty cycle makes no request; an entirely cached cycle makes
 no request. Matching results use the SQLite cache, which includes relevant input,
@@ -88,3 +89,11 @@ Deploy between scrape cycles: pause the scheduler, let any active scrape finish,
 stop the old classifier, back up SQLite, recreate the scraper and all three
 browser-free services, then resume scheduling. Both production enable flags must
 remain true for classification and channel delivery; public defaults remain off.
+
+## First measured production cycle
+
+At 23:06 Cairo on 2026-10-04, 8 new jobs were classified in one request and all
+8 delivered correctly. Scraping took 93 seconds, classifier pickup 28 seconds,
+classification 26 seconds and delivery at most 4 seconds. That was 151 seconds
+from scrape start to the final Telegram acknowledgement, plus any wait for the
+six-minute schedule. Network, board login and model load can change these times.

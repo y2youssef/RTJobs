@@ -98,3 +98,18 @@ For this update, the previous production image remains
 `rtjobs-scraper:production-family-v2`. A rollback to that image requires stopping
 `delivery` and `monitor` as well as `enrichment` first: the previous classifier
 also sends messages itself. Keep the current SQLite database and delivery flags.
+
+
+The update went live at **23:06 Cairo**, application commit `771d456`, image
+`rtjobs-scraper:production-whole-batch-20261004`. The scheduler resumed normally.
+The first cycle saved 7 LinkedIn and 1 Indeed job; Wuzzuf had no new jobs. All
+three source runs were `ok`. Exactly **one completion request classified all
+8 jobs**, then all 8 were delivered with zero destination mismatches.
+
+Measured timings for that cycle: 93 seconds scraping; 28 seconds before the
+classifier started its request (30-second idle polling interval); 26 seconds
+classification; mean 3 and maximum 4 seconds from classification to delivery.
+Total scrape-start to last acknowledgement was 151 seconds, excluding time
+waiting for the six-minute schedule. These are observed timings, not an SLA.
+Request cost was $0.00274745, with 6,790 cached input tokens. No pipeline checks
+were failing and no queue backlog remained at verification.
