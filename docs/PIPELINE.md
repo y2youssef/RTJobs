@@ -16,9 +16,8 @@ The scheduler starts a scrape every six minutes. Each board persists new jobs as
 it goes; source IDs deduplicate repeated scrapes. Raw descriptions are never
 replaced with AI output. Historical raw jobs are not automatically classified.
 
-The classifier polls SQLite every 30 seconds and waits for the complete cycle
-across enabled boards. Every
-uncached new job from that cycle goes into **one completion request**, with no
+Completing a scrape cycle commits its status to SQLite, then immediately
+notifies the classifier. Every uncached new job from that cycle goes into **one completion request**, with no
 25-job cutoff. An empty cycle makes no request; an entirely cached cycle makes
 no request. Matching results use the SQLite cache, which includes relevant input,
 model and prompt/schema version. Provider prompt caching is a separate automatic
@@ -38,13 +37,27 @@ Budget is reserved before calling and reconciled with reported cost, including
 paid invalid responses. Uncertain billing after a timeout retains its reservation.
 The reservation covers advertised long-context pricing tiers conservatively.
 
-The delivery worker polls ready jobs every two seconds. It posts by job family,
+Saving validated results immediately notifies the delivery worker. It posts by job family,
 spaces sends to the same channel about one second apart, and acknowledges each
 success in SQLite. It can post batch A while the model processes batch B. It
 never posts a pending classification. Telegram failure retries delivery without
 repeating classification. A rare crash/timeout after Telegram accepts a message
 but before SQLite records success can cause a duplicate; Telegram sendMessage
 has no transaction shared with SQLite.
+
+## Immediate handoff
+
+Workers receive local Unix socket notifications through the shared data volume;
+no additional service or network port is needed. Producers send a nonblocking
+hint only after the database transaction commits. Notifications contain no job
+content. The receiving worker checks SQLite, preserving batch boundaries,
+retry deadlines, delivery acknowledgements and its existing single-worker lock.
+If a worker is busy, it drains saved work before waiting again.
+
+Workers scan immediately at startup. As a recovery fallback, the classifier
+checks every 30 seconds and delivery every two seconds, so a missed notification
+or a crash between commit and notification cannot strand work. These intervals
+also handle scheduled retries. They do not add a normal dispatch delay.
 
 ## Failures and restart
 
@@ -90,7 +103,7 @@ stop the old classifier, back up SQLite, recreate the scraper and all three
 browser-free services, then resume scheduling. Both production enable flags must
 remain true for classification and channel delivery; public defaults remain off.
 
-## First measured production cycle
+## First measured production cycle (before immediate notifications)
 
 At 23:06 Cairo on 2026-10-04, 8 new jobs were classified in one request and all
 8 delivered correctly. Scraping took 93 seconds, classifier pickup 28 seconds,

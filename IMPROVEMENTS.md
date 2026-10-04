@@ -356,3 +356,13 @@ LinkedIn/Indeed sample parsing, and migration on a copy of the 37,748-job DB.
   billing, recovery, migration, concurrency and alert checks. Live evaluation
   classified all 19 fixtures correctly in one call for $0.002573325.
 - See [pipeline guide](docs/PIPELINE.md) and [deployment record](docs/DEPLOYMENT.md).
+
+
+## H — Immediate queue handoff
+
+Completing a scrape cycle now wakes the classifier through a nonblocking local
+Unix socket on the shared data volume. Committed validated results wake delivery
+the same way. Both workers retain startup scans and bounded recovery polling;
+notifications never replace durable SQLite state or override retry deadlines.
+Tests cover separate processes and containers, commit visibility, missed hints,
+restart, shutdown, duplicate notifications, full buffers and rollback.

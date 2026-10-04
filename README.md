@@ -237,11 +237,11 @@ rollout, active settings and rollback image.
 
 Scraping always saves the original parsed job to `jobs` first. When enabled,
 the same transaction creates a `job_enrichments` row in the **same SQLite DB**.
-A browser-free classifier waits for the complete scrape cycle, then sends every
-uncached new job together in **one OpenRouter completion request**, without a
+Completing a scrape cycle immediately notifies the browser-free classifier,
+which sends every uncached new job together in **one OpenRouter completion request**, without a
 25-job cutoff. Results are validated together and saved individually alongside
-the raw jobs. A separate delivery worker posts ready jobs while the classifier
-handles later cycles. The scraper keeps its six-minute schedule.
+the raw jobs. Committed results immediately notify a separate delivery worker,
+which posts ready jobs while the classifier handles later cycles. The scraper keeps its six-minute schedule.
 See [the pipeline guide](docs/PIPELINE.md) for timing, retries and local monitoring.
 
 Two caches reduce cost:
@@ -267,10 +267,10 @@ CLASSIFIER_MAX_OUTPUT_TOKENS=2200  # allowance per job, scaled for the whole bat
 CLASSIFIER_MAX_INPUT_CHARS=0      # preserve full relevant source input
 CLASSIFIER_ALERT_AFTER_FAILURES=3
 CLASSIFIER_RETRY_MAX_SECONDS=3600
-ENRICHMENT_POLL_SECONDS=30
+ENRICHMENT_POLL_SECONDS=30  # fallback for missed notifications and retries
 NOTIFY_BATCH_SIZE=50
 NOTIFY_PER_CHANNEL_LIMIT=20
-DELIVERY_POLL_SECONDS=2
+DELIVERY_POLL_SECONDS=2    # fallback; saved results notify delivery immediately
 TELEGRAM_CHANNELS_JSON=       # required complete JSON family-to-ID map for classified delivery
 ```
 

@@ -33,6 +33,7 @@ def main():
         with patch("requests.sessions.Session.request", side_effect=AssertionError("Network forbidden")):
             verify(directory)
     subprocess.run([sys.executable, str(ROOT / "scripts/verify_pipeline.py")], check=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts/verify_wakeup.py")], check=True)
     print("All offline checks passed.")
 
 

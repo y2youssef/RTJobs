@@ -158,6 +158,7 @@ CLASSIFIER_MAX_ATTEMPTS = int(os.environ.get("CLASSIFIER_MAX_ATTEMPTS", "3"))
 # terminal retry limit. Infrastructure failures stay pending indefinitely.
 CLASSIFIER_ALERT_AFTER_FAILURES = int(os.environ.get("CLASSIFIER_ALERT_AFTER_FAILURES", str(CLASSIFIER_MAX_ATTEMPTS)))
 CLASSIFIER_RETRY_MAX_SECONDS = int(os.environ.get("CLASSIFIER_RETRY_MAX_SECONDS", "3600"))
+# Recovery/retry intervals: committed work wakes workers immediately.
 ENRICHMENT_POLL_SECONDS = int(os.environ.get("ENRICHMENT_POLL_SECONDS", "30"))
 NOTIFY_BATCH_SIZE = int(os.environ.get("NOTIFY_BATCH_SIZE", "50"))
 NOTIFY_PER_CHANNEL_LIMIT = int(os.environ.get("NOTIFY_PER_CHANNEL_LIMIT", "20"))

@@ -24,6 +24,7 @@ from config import (DB_PATH, ENRICHMENT_ENABLED, CLASSIFIER_MODEL,
 from core import db
 from core.classify import Enricher, EnrichmentError
 from core.log import setup_logging
+from core.wakeup import Wakeup
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,23 @@ def process_job(client: Enricher, job: dict, preview: bool = False) -> dict:
     return dict(report['jobs'][0], usage=report['usage'])
 
 
+def run_worker(client, stop, wakeup, once=False):
+    """Scan on startup/commit, keeping timeout scans for recovery and retries."""
+    while not stop.is_set():
+        wakeup.clear()
+        db.touch_worker('enrichment', 'idle')
+        jobs = [dict(row) for row in db.pending_enrichment_batch()]
+        if jobs:
+            logger.info('Enrichment picked up cycle=%s jobs=%s', jobs[0].get('batch_id'), len(jobs))
+            db.touch_worker('enrichment', 'classifying')
+            process_batch(client, jobs)
+            db.touch_worker('enrichment', 'idle')
+        if once:
+            break
+        if not jobs:
+            wakeup.wait(stop, ENRICHMENT_POLL_SECONDS)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--once', action='store_true')
@@ -201,17 +219,10 @@ def main() -> int:
                 else:
                     print(payload)
                 return int(any(row['error'] for row in report['jobs']))
-            while not stop.is_set():
-                db.touch_worker('enrichment', 'idle')
-                jobs = [dict(row) for row in db.pending_enrichment_batch()]
-                if jobs:
-                    db.touch_worker('enrichment', 'classifying')
-                    process_batch(client, jobs)
-                    db.touch_worker('enrichment', 'idle')
-                if args.once:
-                    break
-                if not jobs:
-                    stop.wait(ENRICHMENT_POLL_SECONDS)
+            with Wakeup('enrichment') as wakeup:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    signal.signal(sig, lambda *_: wakeup.stop(stop))
+                run_worker(client, stop, wakeup, once=args.once)
         finally:
             client.close()
             if not args.preview:

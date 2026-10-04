@@ -290,3 +290,15 @@ Set dummy env before importing config in test scripts:
   cycle: 8 jobs in one completion request, 8 correctly delivered, all boards ok,
   monitor healthy. Image `rtjobs-scraper:production-whole-batch-20261004`; prior
   `production-family-v2` is retained. See docs/DEPLOYMENT.md for exact timings.
+
+## Immediate queue notifications
+- After committing a complete scrape cycle, notify `enrichment`; after committing
+  validated results, notify `delivery` via `core/wakeup.py`. Notifications must
+  never precede commits or block producers. SQLite remains the durable queue.
+- Workers bind the Unix socket in the shared data volume under their existing
+  process lock, before the startup scan. Clear hints BEFORE scanning SQLite to
+  avoid losing a commit between an empty scan and the wait. Keep bounded recovery
+  polling, retry deadlines and whole-cycle batching; never send jobs in a hint.
+- `scripts/verify_wakeup.py` tests real IPC between processes, commit visibility,
+  immediate delivery, missed notifications, restart, backoff and shutdown. It is
+  included in the full offline suite and needs permission for local Unix sockets.

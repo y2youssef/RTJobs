@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, ENRICHMENT_SCHEMA_VERSION,
                     NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT, CLASSIFIER_RETRY_MAX_SECONDS)
+from core import wakeup
 
 _active_scrape_batch = None  # Set only by this process's orchestrator.
 
@@ -353,9 +354,11 @@ def start_scrape_batch() -> int:
     with get_db() as conn:
         # Ofelia serializes scraper processes. A previous unfinished cycle was
         # interrupted; release its already-saved jobs without mixing cycles.
-        conn.execute("UPDATE scrape_batches SET status='interrupted',finished_at=? WHERE status='running'", (now_str(),))
+        recovered = conn.execute("UPDATE scrape_batches SET status='interrupted',finished_at=? WHERE status='running'", (now_str(),)).rowcount
         row = conn.execute("INSERT INTO scrape_batches(started_at) VALUES (?)", (now_str(),))
         _active_scrape_batch = row.lastrowid
+    if recovered and ENRICHMENT_ENABLED:
+        wakeup.notify('enrichment')
     return _active_scrape_batch
 
 
@@ -366,6 +369,8 @@ def finish_scrape_batch(batch_id: int, interrupted: bool = False):
         status = 'interrupted' if interrupted else ('ok' if all(value == 'ok' for value in statuses) else 'degraded')
         conn.execute('UPDATE scrape_batches SET status=?,finished_at=? WHERE id=?', (status, now_str(), batch_id))
     _active_scrape_batch = None
+    if ENRICHMENT_ENABLED:
+        wakeup.notify('enrichment')
 
 
 def start_enrichment_request(request_id: str, batch_id: int | None, job_ids: list[int]):
@@ -396,7 +401,10 @@ def finish_enrichment(job_id: int, result: dict, input_hash: str, model: str,
                       connection=None):
     if connection is None:
         with get_db() as conn:
-            return finish_enrichment(job_id, result, input_hash, model, version, fallback, error, usage, conn)
+            finish_enrichment(job_id, result, input_hash, model, version, fallback, error, usage, conn)
+        if not fallback:
+            wakeup.notify('delivery')
+        return
     payload = json.dumps(result, ensure_ascii=False)
     classification = result["classification"]
     conn = connection
@@ -421,6 +429,8 @@ def finish_enrichment_batch(entries: list[dict], model: str, version: str,
         if request_id:
             conn.execute("UPDATE enrichment_requests SET state='ready',finished_at=?,usage_json=? WHERE request_id=?",
                          (now_str(), json.dumps(usage or {}), request_id))
+    if entries:
+        wakeup.notify('delivery')
 
 
 def retry_enrichment_batch(jobs: list[dict], error: str, retry_at: str, attempted: bool):

@@ -11,6 +11,7 @@ from config import DB_PATH, ENRICHMENT_ENABLED, CLASSIFIED_DELIVERY_ENABLED, DEL
 from core import db, telegram
 from core.classify import load_channels
 from core.log import setup_logging
+from core.wakeup import Wakeup
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,19 @@ def deliver_once(stop=None):
                                progress=lambda: db.touch_worker('delivery', 'delivering'))
     db.touch_worker('delivery', 'idle')
     return sent
+
+
+def run_worker(stop, wakeup, once=False):
+    """Deliver on publication; timeout scans recover missed hints and retries."""
+    while not stop.is_set():
+        wakeup.clear()
+        sent = deliver_once(stop)
+        if sent:
+            logger.info('Delivered %s jobs', sent)
+        if once:
+            break
+        if not sent:
+            wakeup.wait(stop, DELIVERY_POLL_SECONDS)
 
 
 def main():
@@ -41,16 +55,11 @@ def main():
         db.init_db()
         load_channels(require_complete=True)
         stop = threading.Event()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, lambda *_: stop.set())
         try:
-            while not stop.is_set():
-                sent = deliver_once(stop)
-                if sent:
-                    logger.info('Delivered %s jobs', sent)
-                if args.once:
-                    break
-                stop.wait(DELIVERY_POLL_SECONDS)
+            with Wakeup('delivery') as wakeup:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    signal.signal(sig, lambda *_: wakeup.stop(stop))
+                run_worker(stop, wakeup, once=args.once)
         finally:
             db.touch_worker('delivery', 'stopped')
     return 0

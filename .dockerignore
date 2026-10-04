@@ -21,6 +21,7 @@ artifacts
 *.delivery.lock
 *.monitor.lock
 *.scraper.lock
+*.wake.sock
 *.log
 
 # Local browser profiles (Docker uses named volumes)
