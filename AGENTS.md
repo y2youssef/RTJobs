@@ -302,3 +302,8 @@ Set dummy env before importing config in test scripts:
 - `scripts/verify_wakeup.py` tests real IPC between processes, commit visibility,
   immediate delivery, missed notifications, restart, backoff and shutdown. It is
   included in the full offline suite and needs permission for local Unix sockets.
+
+- Immediate notifications deployed at 23:21 Cairo (`d1d8fb2`), image
+  `production-immediate-dispatch-20261004`. First live verification: cycle
+  completed and its 4-job request started in the same recorded second; results
+  saved 14 seconds later and all 4 delivered by the following second.

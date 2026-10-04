@@ -113,3 +113,28 @@ Total scrape-start to last acknowledgement was 151 seconds, excluding time
 waiting for the six-minute schedule. These are observed timings, not an SLA.
 Request cost was $0.00274745, with 6,790 cached input tokens. No pipeline checks
 were failing and no queue backlog remained at verification.
+
+
+## Immediate dispatch update — 2026-10-04
+
+Deployed at **23:21 Cairo**, application commit `d1d8fb2`, image
+`rtjobs-scraper:production-immediate-dispatch-20261004`. The previous
+`production-whole-batch-20261004` image remains available for rollback.
+This update changes no database schema and does not reset saved work.
+
+After SQLite commits a completed cycle, a local notification wakes enrichment;
+after validated results commit, another wakes delivery. Startup scans and timeout
+scans remain recovery fallbacks, respecting retry deadlines and acknowledgements.
+
+The first live cycle after this update finished at **23:22:16**. The worker
+received its notification, selected all **4 new jobs**, and started their single
+completion request in that same recorded second. Classification finished at
+23:22:30; delivery received its notification then and acknowledged all 4 jobs by
+23:22:31. All three source runs were healthy, destinations matched their families,
+and local monitoring reported no failing checks. Timestamps have one-second
+resolution; timings describe this observed cycle, not a latency guarantee.
+
+The complete offline suite passed on Python 3.14 and container Python 3.13.
+Additional real IPC checks verified cross-process and cross-container wakeups,
+commit visibility, immediate delivery, missed notifications, restart, backoff,
+full/duplicate notifications, shutdown and rollback without a premature wakeup.

@@ -110,3 +110,12 @@ At 23:06 Cairo on 2026-10-04, 8 new jobs were classified in one request and all
 classification 26 seconds and delivery at most 4 seconds. That was 151 seconds
 from scrape start to the final Telegram acknowledgement, plus any wait for the
 six-minute schedule. Network, board login and model load can change these times.
+
+
+## Immediate-dispatch verification
+
+After the 23:21 Cairo update on 2026-10-04, the first cycle finished at 23:22:16
+and the classifier started its one request for all 4 new jobs in the same
+recorded second. Classification finished at 23:22:30; delivery was notified then
+and all 4 jobs were acknowledged by 23:22:31. Recovery polling remains available
+without imposing its interval on normal dispatch.
