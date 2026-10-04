@@ -1,0 +1,652 @@
+{
+  "type": "object",
+  "properties": {
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "classification": {
+            "type": "object",
+            "properties": {
+              "job_family": {
+                "type": "string",
+                "enum": [
+                  "sales_business_development",
+                  "accounting_finance_banking",
+                  "customer_service_call_center",
+                  "human_resources_recruitment",
+                  "marketing_ecommerce",
+                  "software_engineering",
+                  "data_ai_analytics",
+                  "it_cloud_cybersecurity",
+                  "engineering_construction",
+                  "industrial_manufacturing_maintenance",
+                  "supply_chain_procurement_logistics",
+                  "operations_projects_quality",
+                  "administration_office_support",
+                  "design_creative",
+                  "content_media_communications",
+                  "healthcare_medical",
+                  "education_training",
+                  "legal_compliance_risk",
+                  "product_business_analysis",
+                  "hospitality_tourism_food_service",
+                  "retail_store_operations",
+                  "safety_security_facilities",
+                  "science_research",
+                  "consulting_strategy",
+                  "general_management",
+                  "other"
+                ]
+              },
+              "specialization": {
+                "type": "string",
+                "enum": [
+                  "academic_administration",
+                  "account_management",
+                  "administrative_assistance",
+                  "agile_scrum_delivery",
+                  "ai_data_annotation",
+                  "ai_llm",
+                  "allied_health",
+                  "analytics_engineering",
+                  "ap_ar",
+                  "architecture_bim",
+                  "art_direction",
+                  "audit_assurance",
+                  "automation_controls",
+                  "b2b_corporate_sales",
+                  "backend",
+                  "banking_operations",
+                  "biomedical_laboratory",
+                  "branch_operations",
+                  "brand_management",
+                  "business_analysis",
+                  "business_development",
+                  "business_operations",
+                  "c_suite",
+                  "call_center",
+                  "cashiering",
+                  "chemistry_materials",
+                  "civil_site",
+                  "cleaning_facility_services",
+                  "cloud_devops",
+                  "compensation_benefits",
+                  "complaints_retention",
+                  "compliance_governance",
+                  "construction_project_management",
+                  "content_creation",
+                  "content_moderation",
+                  "contracts_legal",
+                  "cost_accounting",
+                  "country_regional_management",
+                  "credit_collections",
+                  "crm_lifecycle",
+                  "culinary_kitchen",
+                  "customer_experience",
+                  "customer_service",
+                  "customer_success",
+                  "customer_support",
+                  "cybersecurity",
+                  "data_analysis_bi",
+                  "data_engineering",
+                  "data_entry_documentation",
+                  "data_science_ml",
+                  "database_administration",
+                  "dentistry",
+                  "digital_marketing",
+                  "ecommerce_marketplace",
+                  "electrical_building",
+                  "electrical_industrial",
+                  "embedded",
+                  "employee_relations",
+                  "erp_crm",
+                  "events_activations",
+                  "executive_assistance",
+                  "facilities_management",
+                  "field_sales",
+                  "field_service",
+                  "financial_control",
+                  "financial_reporting_fpa",
+                  "food_beverage_service",
+                  "founder_owner",
+                  "front_office_guest_services",
+                  "frontend",
+                  "full_stack",
+                  "game_development",
+                  "general",
+                  "general_accounting",
+                  "general_management",
+                  "graphic_design",
+                  "healthcare_administration",
+                  "higher_education",
+                  "hotel_operations",
+                  "housekeeping",
+                  "hr_business_partner",
+                  "hr_management",
+                  "hr_operations_personnel",
+                  "hse_safety",
+                  "import_export_customs",
+                  "infrastructure",
+                  "instructional_design",
+                  "insurance_financial_sales",
+                  "insurance_underwriting_claims",
+                  "interior_design",
+                  "it_support_helpdesk",
+                  "journalism_editorial",
+                  "laboratory_research",
+                  "language_instruction",
+                  "learning_development",
+                  "legal_counsel_litigation",
+                  "life_sciences",
+                  "logistics_transportation",
+                  "maintenance",
+                  "management_consulting",
+                  "market_research",
+                  "mechanical_design",
+                  "medical_affairs",
+                  "medical_pharma_sales",
+                  "mental_health_therapy",
+                  "mep_hvac",
+                  "merchandising",
+                  "mobile",
+                  "motion_3d",
+                  "nursing",
+                  "office_management",
+                  "operations_management",
+                  "organizational_consulting",
+                  "payroll_hr",
+                  "performance_media_buying",
+                  "pharmacy",
+                  "physicians",
+                  "physics_mathematics",
+                  "planning_qs_cost",
+                  "plant_management",
+                  "pr_corporate_communications",
+                  "process_improvement",
+                  "process_industrial",
+                  "procurement_purchasing",
+                  "product_design",
+                  "product_management",
+                  "product_owner",
+                  "production",
+                  "project_program_management",
+                  "qa_testing",
+                  "quality_assurance",
+                  "quality_inspection",
+                  "real_estate_sales",
+                  "reception_front_desk",
+                  "regulatory_affairs",
+                  "reservations_ticketing",
+                  "retail_operations",
+                  "retail_sales",
+                  "risk_aml_fraud",
+                  "sales_management",
+                  "sales_operations",
+                  "school_teaching",
+                  "scientific_rd",
+                  "security",
+                  "seo_content_marketing",
+                  "service_delivery",
+                  "shipping_freight",
+                  "social_media",
+                  "software_architecture",
+                  "store_management",
+                  "strategy",
+                  "supply_demand_planning",
+                  "surveying",
+                  "systems_network",
+                  "talent_acquisition",
+                  "tax",
+                  "technical_office",
+                  "technical_presales",
+                  "telesales_inside_sales",
+                  "tendering_estimation",
+                  "transformation",
+                  "translation_localization",
+                  "travel_tourism",
+                  "treasury",
+                  "ui_ux",
+                  "veterinary",
+                  "video_editing_production",
+                  "vocational_training",
+                  "warehouse_inventory",
+                  "writing_copywriting"
+                ]
+              },
+              "routing_confidence": {
+                "type": "string",
+                "enum": [
+                  "High",
+                  "Medium",
+                  "Low"
+                ]
+              },
+              "needs_review": {
+                "type": "boolean"
+              },
+              "employer_sector": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "technology_telecom",
+                  "banking_finance_insurance",
+                  "healthcare_pharma",
+                  "construction_engineering_services",
+                  "real_estate_property",
+                  "manufacturing_industrial",
+                  "energy_utilities",
+                  "automotive_mobility",
+                  "retail_ecommerce",
+                  "fmcg_consumer_goods",
+                  "logistics_transportation",
+                  "hospitality_tourism",
+                  "education",
+                  "media_advertising_entertainment",
+                  "professional_services_bpo",
+                  "government_ngo_development",
+                  "agriculture",
+                  "aviation",
+                  "other",
+                  null
+                ]
+              },
+              "posting_entity_type": {
+                "type": "string",
+                "enum": [
+                  "direct_employer",
+                  "recruitment_staffing",
+                  "outsourcing_provider",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "job_family",
+              "specialization",
+              "routing_confidence",
+              "needs_review",
+              "employer_sector",
+              "posting_entity_type"
+            ],
+            "additionalProperties": false
+          },
+          "seniority": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "Intern",
+                  "Entry",
+                  "Mid",
+                  "Senior",
+                  "Lead",
+                  "Manager",
+                  "Executive",
+                  null
+                ]
+              }
+            },
+            "required": [
+              "level"
+            ],
+            "additionalProperties": false
+          },
+          "requirements": {
+            "type": "object",
+            "properties": {
+              "experience_years_min": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "experience_years_max": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "experience_context": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "education_level": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "High School",
+                  "Technical Diploma",
+                  "Bachelor",
+                  "Master",
+                  "Doctorate",
+                  "Any Degree",
+                  null
+                ]
+              },
+              "education_fields": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tools_and_technologies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "certifications": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "languages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "language": {
+                      "type": "string"
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "proficiency": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "language",
+                    "required",
+                    "proficiency"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "experience_years_min",
+              "experience_years_max",
+              "experience_context",
+              "education_level",
+              "education_fields",
+              "tools_and_technologies",
+              "certifications",
+              "languages"
+            ],
+            "additionalProperties": false
+          },
+          "work_conditions": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "governorate": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "work_setup": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "On-site",
+                  "Hybrid",
+                  "Remote",
+                  null
+                ]
+              },
+              "employment_type": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "Full-time",
+                  "Part-time",
+                  "Contract",
+                  "Internship",
+                  "Freelance",
+                  null
+                ]
+              },
+              "working_hours": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "days_off": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shift_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "travel_required": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "driving_license_required": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "own_vehicle_required": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "location",
+              "governorate",
+              "work_setup",
+              "employment_type",
+              "working_hours",
+              "days_off",
+              "shift_type",
+              "travel_required",
+              "driving_license_required",
+              "own_vehicle_required"
+            ],
+            "additionalProperties": false
+          },
+          "compensation": {
+            "type": "object",
+            "properties": {
+              "salary_min": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "salary_max": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "period": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "Per Hour",
+                  "Per Day",
+                  "Per Month",
+                  "Per Year",
+                  "Per Project",
+                  null
+                ]
+              },
+              "salary_basis": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "Net",
+                  "Gross",
+                  null
+                ]
+              },
+              "commission_explicit": {
+                "type": "boolean"
+              },
+              "benefits": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "Medical Insurance",
+                    "Social Insurance",
+                    "Life Insurance",
+                    "Transportation",
+                    "Transportation Allowance",
+                    "Meals",
+                    "Commission",
+                    "Bonus",
+                    "Profit Share",
+                    "Equity",
+                    "Training & Development",
+                    "Career Growth",
+                    "Learning Budget",
+                    "Mobile Allowance",
+                    "Internet Allowance",
+                    "Housing",
+                    "Relocation",
+                    "Paid Vacation",
+                    "Gym / Wellness",
+                    "Employee Loans"
+                  ]
+                }
+              },
+              "benefits_other": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "salary_min",
+              "salary_max",
+              "currency",
+              "period",
+              "salary_basis",
+              "commission_explicit",
+              "benefits",
+              "benefits_other"
+            ],
+            "additionalProperties": false
+          },
+          "explicit_candidate_constraints": {
+            "type": "object",
+            "properties": {
+              "gender": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "Male",
+                  "Female",
+                  null
+                ]
+              },
+              "age_min": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "age_max": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "military_status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "gender",
+              "age_min",
+              "age_max",
+              "military_status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "job_id",
+          "classification",
+          "seniority",
+          "requirements",
+          "work_conditions",
+          "compensation",
+          "explicit_candidate_constraints"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "jobs"
+  ],
+  "additionalProperties": false
+}

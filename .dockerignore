@@ -6,7 +6,18 @@ __pycache__
 .git
 .gitignore
 .env
+.env.*
+!.env.example
+backups
+exports
+artifacts
+*.bak
+*.pem
+*.key
 *.db
+*.db-wal
+*.db-shm
+*.enrichment.lock
 *.log
 
 # Local browser profiles (Docker uses named volumes)

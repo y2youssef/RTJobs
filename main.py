@@ -9,6 +9,7 @@ from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
 from core import db, login_state
 from core.log import setup_logging
+from config import ENRICHMENT_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,20 @@ def main() -> int:
             board = board_cls()
         except FileNotFoundError as e:
             logger.error("Board config missing: %s", e)
+            from core import telegram
+
+            telegram.notify_failure(f"{board_cls.name}: selector configuration missing", str(e),
+                                    hint="Restore markup/<board>/selectors.json before the next run.")
             sys.exit(1)
 
         logger.info("Running board: %s", board.name)
         try:
             total_new += board.run()
+            if not ENRICHMENT_ENABLED:
+                from core import telegram
+
+                sent = telegram.notify_jobs(db.get_unnotified(board.name))
+                logger.info("[%s] Notified %s job(s)", board.name, sent)
         except SystemExit:
             # SIGTERM/SIGINT bubbled from _handle_term — board's own
             # `finally: stop_chrome` + `finish_run` already ran; stop here
@@ -99,9 +109,9 @@ def main() -> int:
                 import requests
 
                 requests.get(HEALTHCHECK_URL, timeout=10)
-                logger.info("Healthcheck pinged: %s", HEALTHCHECK_URL[:60])
+                logger.info("Healthcheck ping succeeded")
         except Exception as e:
-            logger.warning("Healthcheck ping failed (non-fatal): %s", e)
+            logger.warning("Healthcheck ping failed (non-fatal): %s", type(e).__name__)
 
     return 0
 

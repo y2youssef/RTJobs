@@ -27,6 +27,7 @@ from scrapling.spiders import Request, Response, Spider
 from config import WUZZUF_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
+from core.scrape_health import ScrapeHealth
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def _extract_state(html: str) -> dict:
     """Parse the SSR state blob `window.Wuzzuf.initialStoreState.job.collection`
     straight from the page HTML (it's a JSON-able inline script).
 
-    The `job` object is located by marker + brace balancing, then parsed.
+    The `job` object is located by marker, then decoded directly from HTML.
     Returns {} when absent/unparseable — callers then fall back to the
     DOM-only fields.
     """
@@ -56,34 +57,10 @@ def _extract_state(html: str) -> dict:
         return {}
 
     start = html.find("{", m.start())
-    depth = 0
-    in_str = False
-    esc = False
-    k = start
-    while k < len(html):
-        ch = html[k]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-        k += 1
-
     try:
-        obj = json.loads("{" + html[m.start():k + 1] + "}")
-        collection = (obj.get("job") or {}).get("collection") or {}
-        return collection
+        obj, _end = json.JSONDecoder().raw_decode(html, start)
+        collection = obj.get("collection") if isinstance(obj, dict) else None
+        return collection if isinstance(collection, dict) else {}
     except (ValueError, TypeError) as e:
         logger.warning(f"[wuzzuf] Could not parse SSR state: {e}")
         return {}
@@ -145,8 +122,22 @@ def _enrich(job: dict, entity: dict) -> dict:
     requirements = _strip_html(attrs.get("requirements"))
     if description:
         job["description"] = description
+    # Wuzzuf supplies responsibilities and requirements as separate fields.
+    # Keep both in the full text consumed by exports and enrichment, without
+    # storing another copy of the requirements in extra.
+    if requirements and requirements not in job.get("description", ""):
+        job["description"] = "\n\n".join(filter(None, (
+            job.get("description"), "Job Requirements:\n" + requirements,
+        )))
 
     salary = attrs.get("salary") or {}
+    salary_details = {
+        key: salary[key] for key in ("min", "max", "currency", "period", "additionalDetails")
+        if salary.get(key) is not None and salary[key] != ""
+    }
+    if salary_details:
+        # Preserve numeric pay even when additionalDetails contains a bonus.
+        extra["salary_details"] = salary_details
     if salary.get("additionalDetails"):
         extra["salary"] = salary["additionalDetails"]
     elif salary.get("min") is not None or salary.get("max") is not None:
@@ -167,13 +158,21 @@ def _enrich(job: dict, entity: dict) -> dict:
     ]
     if work_types:
         extra["work_types"] = work_types
+    for field, source_field in (("keywords", "keywords"), ("work_roles", "workRoles")):
+        values = [item["name"] for item in attrs.get(source_field) or []
+                  if isinstance(item, dict) and item.get("name")]
+        if values:
+            extra[field] = values
+    education = ((attrs.get("candidatePreferences") or {}).get("educationLevel") or {}).get("name")
+    if education and education.lower() != "not specified":
+        extra["education_level"] = education
     years = attrs.get("workExperienceYears") or {}
     if years.get("min") is not None or years.get("max") is not None:
         extra["experience_years"] = {
             "min": years.get("min"),
             "max": years.get("max"),
         }
-    if attrs.get("vacancies"):
+    if attrs.get("vacancies") is not None:
         extra["vacancies"] = attrs["vacancies"]
     expire = _parse_state_timestamp(attrs.get("expireAt"))
     if expire:
@@ -182,7 +181,8 @@ def _enrich(job: dict, entity: dict) -> dict:
     return job
 
 
-def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None) -> tuple[list, bool]:
+def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None,
+                  lookup_seen: bool = False) -> tuple[list, bool]:
     """Parse one SSR search page. Returns (jobs, found_duplicate).
 
     DOM gives the card order + job ids; the optional `entities` dict (from
@@ -194,6 +194,10 @@ def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None) -> tu
         for c in sel.css(selectors["search"]["job_card"])
         if c.css(selectors["search"]["title_link"])
     ]
+    if lookup_seen:
+        seen_ids = seen_ids | db.seen_ids_for("wuzzuf", (
+            _job_id_from_slug(card.css(selectors["search"]["title_link"])[0].attrib.get("href", ""))
+            for card in cards))
 
     if entities:
         by_id = {
@@ -256,9 +260,10 @@ class WuzzufJobSpider(Spider):
     def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("wuzzuf")
+        self.seen_ids: set[str] = set()  # IDs discovered during this run only
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
+        self.health = ScrapeHealth("wuzzuf")
         super().__init__(*args, **kwargs)
 
     def configure_sessions(self, manager):
@@ -282,6 +287,7 @@ class WuzzufJobSpider(Spider):
 
     async def scan_page(self, page):
         self._page_jobs = []
+        self.health.check("search_fetch", True)
 
         try:
             await page.wait_for_selector(
@@ -289,14 +295,31 @@ class WuzzufJobSpider(Spider):
             )
         except Exception as e:
             logger.warning(f"[wuzzuf] Job list never appeared: {e}")
-            markup.save_snapshot("wuzzuf", "search_failed", await page.content())
+            await self.health.page_failure("search_structure", "Job links did not appear before the timeout.", page)
+            self._repeat_found = True
             return
 
         html = await page.content()
         entities = _extract_state(html)
         jobs, found_duplicate = _extract_jobs(
-            html, self.sel, self.seen_ids, entities
+            html, self.sel, self.seen_ids, entities, lookup_seen=True
         )
+        self.health.check("search_structure", bool(jobs or found_duplicate),
+                          "Job links appeared, but no new or known cards could be parsed.", html)
+        self.health.check("ssr_collection", bool(entities),
+                          "Wuzzuf job.collection is missing/empty; DOM fallback loses full job data.", html)
+        if entities:
+            attributes = [(e.get("attributes") or {}) for e in entities.values() if isinstance(e, dict)]
+            self.health.check("ssr_fields", any("description" in a and "requirements" in a for a in attributes),
+                              "SSR entities no longer expose description and requirements fields.", html)
+            by_id = {_job_id_from_slug(a.get("slug")): a for a in attributes}
+            for job in jobs:
+                attrs = by_id.get(job["external_id"], {})
+                parts = [_strip_html(attrs.get(k)) for k in ("description", "requirements")]
+                preserved = bool(attrs) and all(part in job["description"] for part in parts if part)
+                self.health.check("source_text_preserved", preserved,
+                                  f"Job {job['external_id']} lost source description/requirements or its SSR entity match.", html)
+        self.health.job_fields(jobs, html)
 
         self._page_jobs = jobs
         for job in jobs:
@@ -340,11 +363,14 @@ class WuzzufJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> list[dict]:
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> list[dict]:
     """Run the spider and return the scraped job dicts."""
     spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
+    if health is not None:
+        spider.health = health
     result = spider.start()
     items = list(result.items)
+    spider.health.report()
     logger.info(
         f"[wuzzuf] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )

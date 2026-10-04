@@ -1,3 +1,11 @@
 {
-  "_comment": "Indeed needs no CSS selectors — all data comes from embedded JSON blobs (window.mosaic.providerData for cards, window._initialData / application/ld+json for the viewjob page). See INDEED.md."
+  "_comment": "Indeed needs no CSS selectors for JOBS — all data comes from embedded JSON blobs (window.mosaic.providerData for cards, window._initialData / application/ld+json for the viewjob page). See INDEED.md. The login block below drives the email+code sign-in on secure.indeed.com/auth (verified live Oct 2026).",
+  "login": {
+    "email": "input[name=\"__email\"]",
+    "email_submit": "[data-tn-element=\"auth-page-email-submit-button\"]",
+    "code_fallback": "a#auth-page-google-otp-fallback",
+    "code_input": "input[autocomplete=\"one-time-code\"], input[inputmode=\"numeric\"]",
+    "code_submit": "button[type=\"submit\"]",
+    "password": "input[type=\"password\"]"
+  }
 }

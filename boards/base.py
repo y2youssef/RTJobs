@@ -10,23 +10,24 @@ from config import MARKUP_DIR
 logger = logging.getLogger(__name__)
 
 
-def persist_and_notify(source: str, items: list[dict]) -> tuple[int, int]:
-    """Save jobs (with blocklist filtering) and send Telegram notifications.
+def persist_jobs(source: str, items: list[dict]) -> int:
+    """Save jobs with blocklist filtering and optional enrichment queuing.
 
-    Returns (new_count, sent_count). Blocked jobs are `mark_seen`'d so they
+    Returns new_count. Blocked jobs are marked seen so they
     are never re-scraped, but never saved/notified. Shared by all boards.
     """
-    from core import blocklist, db, telegram
+    from core import blocklist, db
 
-    new_count = 0
+    accepted = []
+    blocked = []
     blocked_names: list[str] = []
     for job in items or []:
         if blocklist.is_blocked(job.get("source") or source, job.get("company") or ""):
-            db.mark_seen(job["source"], job["external_id"])
+            blocked.append((job["source"], str(job["external_id"])))
             blocked_names.append(job.get("company") or "?")
             continue
-        db.save_job(job)
-        new_count += 1
+        accepted.append(job)
+    new_count = db.save_jobs(accepted, blocked)
     if blocked_names:
         logger.info(
             f"[{source}] Filtered out {len(blocked_names)} blocked-company"
@@ -34,9 +35,9 @@ def persist_and_notify(source: str, items: list[dict]) -> tuple[int, int]:
         )
     logger.info(f"[{source}] Saved {new_count} new job(s)")
 
-    sent = telegram.notify_jobs(db.get_unnotified(source))
-    logger.info(f"[{source}] Notified {sent} job(s)")
-    return new_count, sent
+    # Notification happens after Chrome closes (main.py), or in the separate
+    # enrichment worker. No network waits inside the browser's lifetime here.
+    return new_count
 
 
 def load_board_selectors(site: str) -> dict:
@@ -63,7 +64,7 @@ class JobBoard(ABC):
 
     @abstractmethod
     def run(self) -> int:
-        """Scrape the board, persist jobs, and notify.
+        """Scrape the board and persist jobs; delivery runs after Chrome closes.
 
         Returns the number of newly scraped jobs (0 is a valid result).
         """

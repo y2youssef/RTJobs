@@ -10,7 +10,7 @@ spider both connect to that same Chrome over cdp_url and reuse its default
 import logging
 from scrapling.fetchers import StealthySession
 
-from boards.base import JobBoard, persist_and_notify
+from boards.base import JobBoard, persist_jobs
 from boards.linkedin import login, scraper
 from config import (
     CHROME_DEBUG_PORT,
@@ -19,8 +19,10 @@ from config import (
     LINKEDIN_ENABLED,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
+    LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
 )
 from core import db, login_state, telegram
+from core.scrape_health import ScrapeHealth
 from core.browser import (
     chrome_session,
     install_cdp_default_context_patch,
@@ -59,11 +61,17 @@ class LinkedInBoard(JobBoard):
         # start our own browser (inside a page_action it would kill itself).
         login.kill_zombie_chrome()
 
-        with chrome_session(
-            LINKEDIN_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
-            clean_locks=KILL_CHROME_ON_START,
-        ) as cdp:
-            return self._run(cdp, run_id)
+        try:
+            with chrome_session(
+                LINKEDIN_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
+                clean_locks=KILL_CHROME_ON_START,
+            ) as cdp:
+                return self._run(cdp, run_id)
+        except BaseException as exc:
+            status = "interrupted" if isinstance(exc, SystemExit) else "error"
+            db.finish_run(run_id, status, error=str(exc))
+            raise
+
 
     def _run(self, cdp: str, run_id: int) -> int:
         outcome: dict = {"ok": False}
@@ -83,6 +91,7 @@ class LinkedInBoard(JobBoard):
                 cdp_url=cdp,
                 disable_resources=True,
                 timeout=30_000,
+                retry_delay=LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
                 page_setup=patch_no_load_wait,
                 page_action=page_action,
             ) as session:
@@ -94,7 +103,8 @@ class LinkedInBoard(JobBoard):
                 _finish("login_failed")
                 return 0
 
-            result = scraper.scrape(self.selectors, cdp_url=cdp)
+            health = ScrapeHealth(self.name)
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
 
             if result["login_redirect"]:
                 logger.info("[linkedin] Session died mid-scrape — aborting.")
@@ -107,9 +117,9 @@ class LinkedInBoard(JobBoard):
                 )
                 return 0
 
-            new_count, _sent = persist_and_notify(self.name, result["items"])
+            new_count = persist_jobs(self.name, result["items"])
 
-            _finish("ok", jobs_found=new_count)
+            _finish(health.status, jobs_found=new_count, error=health.error)
             return new_count
 
         except BaseException as e:

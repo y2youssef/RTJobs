@@ -1,18 +1,56 @@
 # INDEED.md — Indeed board scraping notes
 
-Strategy: poll a single search URL (sorted by date), no login, no pagination.
-Dedupe via `jobkey` against `seen_ids`; fetch `/viewjob?jk=` only for NEW jobs.
+Strategy: poll a single search URL (sorted by date), no pagination.
+Login-gated: keep the persistent-profile session alive, re-login by email
+code when it expires (see "Login" below). Dedupe via `jobkey` against
+`seen_ids`; fetch `/viewjob?jk=` only for NEW jobs.
 
 ## Search URL (single source of truth)
 https://eg.indeed.com/jobs?q=&l=مصر&radius=100&sort=date&vjk=992741b34fe51afd
 
-- No login needed for page 1; pagination IS login-gated → don't paginate.
+- The current anonymous flow is login-gated even on page 1; use the saved session.
+  This board still polls only one page.
 - First page holds ~15 jobs (newest first). `sort=date` keeps new jobs at top.
 
 ## Gating
 - Plain curl with CF cookies → 403 "Security Check" (Cloudflare captcha).
 - Must use scrapling stealth session with `solve_cloudflare=True`, persistent
   profile (cf_clearance), CDP pattern like the other boards.
+- Since ~Oct 2026 Indeed is LOGIN-GATED for anonymous sessions: even after a
+  solved turnstile it 403-redirects to
+  `/account/login?branding=login-required&from=bot-detection-anonymous`.
+  Scraping requires the logged-in profile session (see "Login").
+
+## Login (Telegram-assisted email codes)
+- Flow (boards/indeed/login.py, verified live Oct 2026): search page ->
+  302 to `secure.indeed.com/auth` -> fill `INDEED_EMAIL` -> Continue ->
+  click "Sign in with a code instead" (`a#auth-page-google-otp-fallback`)
+  -> type the emailed 6-digit code -> verify via homepage
+  (`"isLoggedIn":true` / logout link). One-time per session; cookies persist
+  in the `indeed_profile` volume like LinkedIn.
+- Code round-trip: the run prompts the failure channel (ForceReply, falls
+  back to plain text in channels) and long-polls Bot `getUpdates`
+  (`timeout=30`, `allowed_updates=[message, channel_post]`) up to
+  `INDEED_CODE_WAIT_SECONDS`. Reply in the channel or DM the bot — a reply
+  to the prompt is matched first, any 6-digit message is fallback. Offset is
+  persisted (`telegram_update_offset`); the window opens at alert time so
+  stale codes are never consumed. A missed code cools down 30 min, then the
+  next run starts a fresh episode (fresh code + fresh prompt).
+- Gotchas:
+  - Navigate with ONE in-browser `page.goto` (page_action), NOT the
+    engine's redirect chain: the engine follows the 307/302 to
+    `secure.indeed.com` as a separate fetch and the dispatcher 400s on the
+    cookieless `;jsessionid` URL. If a landing still carries `;jsessionid`,
+    re-request the stripped URL (session cookie now set) — this flips
+    400 -> 200 (verified live).
+  - After code submit, wait until the URL LEAVES the auth page (OAuth dance
+    via postauthfunnel, up to ~90s) before judging — an early check misreads
+    a mid-flight redirect as a rejection.
+  - `secure.indeed.com/auth` challenge pages are titled "Security Check"
+    (not "Just a moment") — the settle helper watches for both.
+  - Spider safety net: auth-redirect/block-page mid-scrape sets flags
+    (`logged_out`/`blocked`) instead of grinding turnstiles; the board
+    alerts once per episode (see `mark_logged_out` / `mark_blocked_page`).
 
 ## Data sources in HTML
 
@@ -33,7 +71,11 @@ Fields per job:
 - NOTE: this blob only covers the visible page (~15 jobs); requires page 2+ for more
 
 ### 2. View job page `/viewjob?jk={JOB_KEY}` — full description
-Fetch only for new keys (dedupe first). Two embedded sources:
+Fetch only for new keys (dedupe first). Three supported embedded sources:
+- `window._rootProps.preloadedVJData` (verified live October 2026):
+  `jobInfoWrapperModel.jobInfoModel.sanitizedJobDescription`, header location,
+  `salaryInfoModel`, and `jobKey`. In this layout `_initialData` is JavaScript
+  referring to `_rootProps`, not strict JSON. Parse `_rootProps` directly.
 - `window._initialData = {...};`
   Path (VERIFIED on real viewjob capture, Aug 2026):
   `hostQueryExecutionResult.data.jobData.results[0].job`
@@ -48,19 +90,22 @@ Fetch only for new keys (dedupe first). Two embedded sources:
 - `<script type="application/ld+json">` (Schema.org JobPosting)
   - `title`, `hiringOrganization.name`, `jobLocation`, `description` (HTML),
     `baseSalary.value.{minValue,maxValue,currency}`, `datePosted` (ISO) — good
-    fallback for salary/date, stable structure.
+    fallback for description and a supplement for salary, employment types,
+    location/country, remote work and expiry even when another source supplied
+    the description. Require `@type=JobPosting` and reject conflicting job keys.
 
 ## Extraction approach
-- Marker regex + brace balancing (like Wuzzuf `_extract_state`) — NOT
+- Marker regex + `json.JSONDecoder().raw_decode(html, start)` — NOT
   non-greedy `({.*?});` regexes: nested braces break them.
 - `re.search(r'window\.mosaic\.providerData\["mosaic-provider-jobcards"\]\s*=\s*', html)`
-  then balance braces to the closing `};`.
+  then let the JSON decoder identify the object boundary, including nested braces.
 - Use `page.content()` (stealth isolated contexts kill `evaluate`, learned on Wuzzuf).
 
 ## Poll frequency / "never miss" math
 - Miss condition: >15 new jobs posted within one poll interval.
-- Threshold = 15 jobs/interval = 3,600 jobs/day at 6-min polling. Egypt's real
-  rate (~tens-hundreds/day) gives >25x margin → 6-min ofelia cadence is safe.
+- Nominal capacity = 15 jobs/interval = 3,600 jobs/day at 6-min polling.
+  This assumes every run completes on schedule and all slots are new listings;
+  it is not a guarantee of coverage.
 - Caveats: sponsored jobs occupy top-15 slots (smaller capacity); bursts
   (batch postings) could exceed 15/interval. Mitigation candidates: tighter
   polling (CF burn/rate-limit risk), or accept edge case.
@@ -74,10 +119,21 @@ posted_at=createDate (ms→local `YYYY-MM-DD HH:MM`, TZ=Africa/Cairo; NOTE:
 description=viewjob description.text (fallback ld+json / search snippet),
 link=https://eg.indeed.com/viewjob?jk={key} (canonical — drop the token-laden
 `viewJobLink` query string), extra={location, salary min/max/type, jobTypes,
-snippet, latitude/longitude}, scraped_at.
+snippet, latitude/longitude}, scraped_at. `description_truncated` remains true
+until a full detail description is parsed; `description_source` is either
+`search_snippet` or `detail`. `detail_status` identifies `cap_reached`,
+`unavailable` or `fetch_failed`. Failed detail requests retain the raw search
+card. The ten-detail cap still applies; skipped details are not automatically
+retried on later scrapes because those job keys have already been saved.
 
 ## To verify (implementation phase)
 - Offline fixtures in `markup/indeed/`: search page capture + 1 viewjob capture
 - `_extract_jobs(search_html)` → 15 jobs, non-empty fields
-- `_extract_description(viewjob_html)` → non-empty text
+- `_extract_detail(viewjob_html, expected_key)` → full text + metadata
 - Confirm sponsored count in top-15 on real capture.
+
+`scripts/verify_offline.py` covers both the older `newjob_sample.html` and
+current `standalone_job_sample.html` fixtures, including salary, employment
+types, mismatched job identity and failed-request card retention. Live validation
+on 2026-10-03 parsed 15 search cards and three current detail pages per audit;
+this sample verifies the parser paths, not site-wide completeness.

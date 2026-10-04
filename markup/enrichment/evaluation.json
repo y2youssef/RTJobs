@@ -1,0 +1,334 @@
+[
+  {
+    "name": "finance_at_tech",
+    "job": {
+      "id": 1,
+      "source": "linkedin",
+      "title": "Senior Accountant",
+      "company": "Microsoft",
+      "description": "Prepare ledgers and financial statements. 2–4 years of accounting experience required. Bachelor in Accounting required; Master preferred. MS Excel and SAP required. Salary 18000–22000 EGP gross per month. No travel required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "accounting_finance_banking",
+      "classification.specialization": "general_accounting",
+      "seniority.level": "Senior",
+      "requirements.experience_years_min": 2,
+      "requirements.experience_years_max": 4,
+      "requirements.education_level": "Bachelor",
+      "compensation.currency": "EGP",
+      "compensation.period": "Per Month",
+      "compensation.salary_basis": "Gross",
+      "work_conditions.travel_required": false
+    }
+  },
+  {
+    "name": "software_at_bank",
+    "job": {
+      "id": 2,
+      "source": "linkedin",
+      "title": "Backend Engineer",
+      "company": "Mashreq",
+      "description": "Develop backend APIs using Python, PostgreSQL and Docker for our banking platform.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "software_engineering",
+      "classification.specialization": "backend",
+      "classification.employer_sector": "banking_finance_insurance",
+      "compensation.currency": null,
+      "requirements.languages": []
+    }
+  },
+  {
+    "name": "medical_sales",
+    "job": {
+      "id": 3,
+      "source": "linkedin",
+      "title": "Medical Sales Representative",
+      "company": "Pfizer",
+      "description": "Promote pharmaceutical products to doctors and pharmacies, visit accounts and close sales. Driving license and own vehicle required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "sales_business_development",
+      "classification.specialization": "medical_pharma_sales",
+      "work_conditions.driving_license_required": true,
+      "work_conditions.own_vehicle_required": true
+    }
+  },
+  {
+    "name": "property_sales",
+    "job": {
+      "id": 4,
+      "source": "linkedin",
+      "title": "Property Consultant",
+      "company": "Example Employer",
+      "description": "Prospect buyers, conduct apartment viewings and close property sales. Commission provided.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "sales_business_development",
+      "classification.specialization": "real_estate_sales",
+      "compensation.commission_explicit": true
+    }
+  },
+  {
+    "name": "hr_at_hotel",
+    "job": {
+      "id": 5,
+      "source": "linkedin",
+      "title": "HR Specialist",
+      "company": "Marriott",
+      "description": "Handle personnel files, employee attendance and HR operations for our hotel.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "human_resources_recruitment",
+      "classification.specialization": "hr_operations_personnel"
+    }
+  },
+  {
+    "name": "construction_hvac",
+    "job": {
+      "id": 6,
+      "source": "linkedin",
+      "title": "Mechanical HVAC Site Engineer",
+      "company": "Example Employer",
+      "description": "Supervise HVAC installation on building construction sites, coordinate MEP drawings and contractors. AutoCAD required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "engineering_construction",
+      "classification.specialization": "mep_hvac"
+    }
+  },
+  {
+    "name": "factory_maintenance",
+    "job": {
+      "id": 7,
+      "source": "linkedin",
+      "title": "Mechanical Maintenance Engineer",
+      "company": "Example Employer",
+      "description": "Maintain factory production machinery and carry out preventive maintenance and breakdown repairs.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "industrial_manufacturing_maintenance",
+      "classification.specialization": "maintenance"
+    }
+  },
+  {
+    "name": "hse",
+    "job": {
+      "id": 8,
+      "source": "linkedin",
+      "title": "HSE Engineer",
+      "company": "Example Employer",
+      "description": "Manage occupational safety inspections, workplace risk assessments and safety compliance. NEBOSH certification required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "safety_security_facilities",
+      "classification.specialization": "hse_safety",
+      "requirements.certifications": [
+        "NEBOSH"
+      ]
+    }
+  },
+  {
+    "name": "data_science",
+    "job": {
+      "id": 9,
+      "source": "linkedin",
+      "title": "Data Scientist",
+      "company": "Example Employer",
+      "description": "Build machine-learning models, run statistical experiments and train predictive models in Python.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "data_ai_analytics",
+      "classification.specialization": "data_science_ml"
+    }
+  },
+  {
+    "name": "devops",
+    "job": {
+      "id": 10,
+      "source": "linkedin",
+      "title": "DevOps Engineer",
+      "company": "Example Employer",
+      "description": "Operate cloud infrastructure using Amazon Web Services, K8s and CICD pipelines.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "it_cloud_cybersecurity",
+      "classification.specialization": "cloud_devops"
+    }
+  },
+  {
+    "name": "months",
+    "job": {
+      "id": 11,
+      "source": "linkedin",
+      "title": "Junior Software Developer",
+      "company": "Example Employer",
+      "description": "Build frontend applications in JS and React. Six months of experience required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "software_engineering",
+      "classification.specialization": "frontend",
+      "seniority.level": "Entry",
+      "requirements.experience_years_min": 0.5
+    }
+  },
+  {
+    "name": "sparse_ambiguous",
+    "job": {
+      "id": 12,
+      "source": "linkedin",
+      "title": "Specialist",
+      "company": "Example Employer",
+      "description": "Join our team. Details will be discussed during interview.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "other",
+      "classification.specialization": "general",
+      "classification.routing_confidence": "Low",
+      "classification.needs_review": true,
+      "classification.employer_sector": null,
+      "seniority.level": null,
+      "work_conditions.work_setup": null,
+      "compensation.currency": null,
+      "requirements.languages": []
+    }
+  },
+  {
+    "name": "agency_unknown_client",
+    "job": {
+      "id": 13,
+      "source": "linkedin",
+      "title": "Sales Representative",
+      "company": "Example Recruitment",
+      "description": "We are a recruitment agency advertising for an unnamed client. Prospect new customers and close B2B corporate sales. The client sector is undisclosed.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "sales_business_development",
+      "classification.specialization": "b2b_corporate_sales",
+      "classification.posting_entity_type": "recruitment_staffing",
+      "classification.employer_sector": null
+    }
+  },
+  {
+    "name": "bpo_languages",
+    "job": {
+      "id": 14,
+      "source": "linkedin",
+      "title": "Call Center Agent",
+      "company": "Example BPO",
+      "description": "Our BPO employs agents serving client accounts. Answer customer calls. German B2 is mandatory; fluent English is a plus. Rotational shifts. Communication, teamwork, negotiation and reporting skills.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "customer_service_call_center",
+      "classification.specialization": "call_center",
+      "classification.posting_entity_type": "outsourcing_provider",
+      "requirements.tools_and_technologies": []
+    }
+  },
+  {
+    "name": "functional_head",
+    "job": {
+      "id": 15,
+      "source": "linkedin",
+      "title": "Head of Finance",
+      "company": "Example Employer",
+      "description": "Lead the finance department, financial control and statutory reporting. 2 years of experience required.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "accounting_finance_banking",
+      "classification.specialization": "financial_control",
+      "seniority.level": "Manager"
+    }
+  },
+  {
+    "name": "cross_functional_manager",
+    "job": {
+      "id": 16,
+      "source": "linkedin",
+      "title": "General Manager",
+      "company": "Example Employer",
+      "description": "Own P&L and lead finance, HR, sales and operations across the business.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "general_management",
+      "classification.specialization": "general_management",
+      "seniority.level": "Executive"
+    }
+  },
+  {
+    "name": "product_specialist_sales",
+    "job": {
+      "id": 17,
+      "source": "linkedin",
+      "title": "Product Specialist",
+      "company": "Example Employer",
+      "description": "Promote medical equipment, prospect hospitals, prepare commercial proposals and close sales; sales quota ownership.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "sales_business_development",
+      "classification.specialization": "medical_pharma_sales"
+    }
+  },
+  {
+    "name": "structured_source",
+    "job": {
+      "id": 18,
+      "source": "linkedin",
+      "title": "Accountant",
+      "company": "Example Employer",
+      "description": "Maintain general accounting ledgers. 18 months of experience required. Salary available but currency and period are not stated.",
+      "extra": {
+        "location": "Dokki, Giza, Egypt",
+        "workplace": "Hybrid",
+        "salary": {
+          "min": 10000,
+          "max": 15000
+        }
+      }
+    },
+    "expected": {
+      "classification.job_family": "accounting_finance_banking",
+      "classification.specialization": "general_accounting",
+      "requirements.experience_years_min": 1.5,
+      "work_conditions.governorate": "Giza",
+      "work_conditions.work_setup": "Hybrid",
+      "compensation.salary_min": 10000,
+      "compensation.salary_max": 15000,
+      "compensation.currency": null,
+      "compensation.period": null
+    }
+  },
+  {
+    "name": "country_manager",
+    "job": {
+      "id": 19,
+      "source": "linkedin",
+      "title": "Country Manager",
+      "company": "Example Employer",
+      "description": "Own country P&L and lead finance, HR, sales and operations across the business.",
+      "extra": {}
+    },
+    "expected": {
+      "classification.job_family": "general_management",
+      "classification.specialization": "country_regional_management",
+      "seniority.level": "Executive"
+    }
+  }
+]

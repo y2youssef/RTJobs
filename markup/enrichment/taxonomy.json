@@ -1,0 +1,302 @@
+{
+  "version": 2,
+  "schema_version": "job_family_v2",
+  "job_families": {
+    "sales_business_development": "Sales / Business Development",
+    "accounting_finance_banking": "Accounting / Finance / Banking",
+    "customer_service_call_center": "Customer Service / Call Center",
+    "human_resources_recruitment": "Human Resources / Recruitment",
+    "marketing_ecommerce": "Marketing / E-commerce",
+    "software_engineering": "Software Engineering",
+    "data_ai_analytics": "Data / AI / Analytics",
+    "it_cloud_cybersecurity": "IT / Cloud / Cybersecurity",
+    "engineering_construction": "Engineering / Construction",
+    "industrial_manufacturing_maintenance": "Industrial / Manufacturing / Maintenance",
+    "supply_chain_procurement_logistics": "Supply Chain / Procurement / Logistics",
+    "operations_projects_quality": "Operations / Projects / Quality",
+    "administration_office_support": "Administration / Office Support",
+    "design_creative": "Design / Creative",
+    "content_media_communications": "Content / Media / Communications",
+    "healthcare_medical": "Healthcare / Medical",
+    "education_training": "Education / Training",
+    "legal_compliance_risk": "Legal / Compliance / Risk",
+    "product_business_analysis": "Product / Business Analysis",
+    "hospitality_tourism_food_service": "Hospitality / Tourism / Food Service",
+    "retail_store_operations": "Retail / Store Operations",
+    "safety_security_facilities": "Safety / Security / Facilities",
+    "science_research": "Science / Research",
+    "consulting_strategy": "Consulting / Strategy",
+    "general_management": "General Management",
+    "other": "Other / Unclassified"
+  },
+  "specializations": {
+    "sales_business_development": [
+      "field_sales",
+      "b2b_corporate_sales",
+      "business_development",
+      "account_management",
+      "telesales_inside_sales",
+      "technical_presales",
+      "medical_pharma_sales",
+      "real_estate_sales",
+      "insurance_financial_sales",
+      "retail_sales",
+      "sales_management",
+      "sales_operations",
+      "general"
+    ],
+    "accounting_finance_banking": [
+      "general_accounting",
+      "ap_ar",
+      "cost_accounting",
+      "financial_reporting_fpa",
+      "treasury",
+      "audit_assurance",
+      "tax",
+      "financial_control",
+      "credit_collections",
+      "banking_operations",
+      "insurance_underwriting_claims",
+      "general"
+    ],
+    "customer_service_call_center": [
+      "call_center",
+      "customer_service",
+      "customer_support",
+      "customer_experience",
+      "customer_success",
+      "complaints_retention",
+      "general"
+    ],
+    "human_resources_recruitment": [
+      "talent_acquisition",
+      "hr_operations_personnel",
+      "hr_business_partner",
+      "compensation_benefits",
+      "learning_development",
+      "payroll_hr",
+      "employee_relations",
+      "hr_management",
+      "general"
+    ],
+    "marketing_ecommerce": [
+      "digital_marketing",
+      "performance_media_buying",
+      "social_media",
+      "brand_management",
+      "ecommerce_marketplace",
+      "seo_content_marketing",
+      "market_research",
+      "crm_lifecycle",
+      "events_activations",
+      "general"
+    ],
+    "software_engineering": [
+      "frontend",
+      "backend",
+      "full_stack",
+      "mobile",
+      "qa_testing",
+      "software_architecture",
+      "embedded",
+      "game_development",
+      "general"
+    ],
+    "data_ai_analytics": [
+      "data_analysis_bi",
+      "data_engineering",
+      "data_science_ml",
+      "ai_llm",
+      "analytics_engineering",
+      "general"
+    ],
+    "it_cloud_cybersecurity": [
+      "it_support_helpdesk",
+      "systems_network",
+      "cloud_devops",
+      "cybersecurity",
+      "database_administration",
+      "erp_crm",
+      "infrastructure",
+      "general"
+    ],
+    "engineering_construction": [
+      "civil_site",
+      "architecture_bim",
+      "mep_hvac",
+      "electrical_building",
+      "technical_office",
+      "planning_qs_cost",
+      "tendering_estimation",
+      "construction_project_management",
+      "surveying",
+      "general"
+    ],
+    "industrial_manufacturing_maintenance": [
+      "production",
+      "maintenance",
+      "mechanical_design",
+      "electrical_industrial",
+      "automation_controls",
+      "process_industrial",
+      "quality_inspection",
+      "field_service",
+      "plant_management",
+      "general"
+    ],
+    "supply_chain_procurement_logistics": [
+      "procurement_purchasing",
+      "logistics_transportation",
+      "warehouse_inventory",
+      "supply_demand_planning",
+      "import_export_customs",
+      "shipping_freight",
+      "general"
+    ],
+    "operations_projects_quality": [
+      "operations_management",
+      "project_program_management",
+      "service_delivery",
+      "quality_assurance",
+      "process_improvement",
+      "business_operations",
+      "general"
+    ],
+    "administration_office_support": [
+      "administrative_assistance",
+      "office_management",
+      "executive_assistance",
+      "reception_front_desk",
+      "data_entry_documentation",
+      "general"
+    ],
+    "design_creative": [
+      "graphic_design",
+      "ui_ux",
+      "interior_design",
+      "motion_3d",
+      "product_design",
+      "art_direction",
+      "general"
+    ],
+    "content_media_communications": [
+      "writing_copywriting",
+      "content_creation",
+      "video_editing_production",
+      "pr_corporate_communications",
+      "journalism_editorial",
+      "translation_localization",
+      "content_moderation",
+      "ai_data_annotation",
+      "general"
+    ],
+    "healthcare_medical": [
+      "physicians",
+      "pharmacy",
+      "nursing",
+      "dentistry",
+      "allied_health",
+      "biomedical_laboratory",
+      "mental_health_therapy",
+      "veterinary",
+      "medical_affairs",
+      "healthcare_administration",
+      "general"
+    ],
+    "education_training": [
+      "school_teaching",
+      "language_instruction",
+      "higher_education",
+      "vocational_training",
+      "instructional_design",
+      "academic_administration",
+      "general"
+    ],
+    "legal_compliance_risk": [
+      "legal_counsel_litigation",
+      "contracts_legal",
+      "compliance_governance",
+      "risk_aml_fraud",
+      "regulatory_affairs",
+      "general"
+    ],
+    "product_business_analysis": [
+      "product_management",
+      "product_owner",
+      "business_analysis",
+      "agile_scrum_delivery",
+      "general"
+    ],
+    "hospitality_tourism_food_service": [
+      "culinary_kitchen",
+      "food_beverage_service",
+      "front_office_guest_services",
+      "housekeeping",
+      "reservations_ticketing",
+      "travel_tourism",
+      "hotel_operations",
+      "general"
+    ],
+    "retail_store_operations": [
+      "store_management",
+      "cashiering",
+      "merchandising",
+      "branch_operations",
+      "retail_operations",
+      "general"
+    ],
+    "safety_security_facilities": [
+      "hse_safety",
+      "security",
+      "facilities_management",
+      "cleaning_facility_services",
+      "general"
+    ],
+    "science_research": [
+      "life_sciences",
+      "chemistry_materials",
+      "physics_mathematics",
+      "scientific_rd",
+      "laboratory_research",
+      "general"
+    ],
+    "consulting_strategy": [
+      "management_consulting",
+      "strategy",
+      "transformation",
+      "organizational_consulting",
+      "general"
+    ],
+    "general_management": [
+      "general_management",
+      "country_regional_management",
+      "c_suite",
+      "founder_owner",
+      "general"
+    ],
+    "other": [
+      "general"
+    ]
+  },
+  "employer_sectors": [
+    "technology_telecom",
+    "banking_finance_insurance",
+    "healthcare_pharma",
+    "construction_engineering_services",
+    "real_estate_property",
+    "manufacturing_industrial",
+    "energy_utilities",
+    "automotive_mobility",
+    "retail_ecommerce",
+    "fmcg_consumer_goods",
+    "logistics_transportation",
+    "hospitality_tourism",
+    "education",
+    "media_advertising_entertainment",
+    "professional_services_bpo",
+    "government_ngo_development",
+    "agriculture",
+    "aviation",
+    "other"
+  ]
+}

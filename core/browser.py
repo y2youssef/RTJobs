@@ -49,6 +49,8 @@ def patch_no_load_wait(page):
 
 
 def _patch_sync(page) -> None:
+    if getattr(page, "_no_load_patched", False):
+        return
     orig_goto = page.goto
 
     def goto(url, *args, **kwargs):
@@ -65,9 +67,12 @@ def _patch_sync(page) -> None:
         return orig_wait(state, *args, **kwargs)
 
     page.wait_for_load_state = wait_for_load_state
+    page._no_load_patched = True
 
 
 async def _patch_async(page) -> None:
+    if getattr(page, "_no_load_patched", False):
+        return
     orig_goto = page.goto
 
     async def goto(url, *args, **kwargs):
@@ -84,6 +89,7 @@ async def _patch_async(page) -> None:
         return await orig_wait(state, *args, **kwargs)
 
     page.wait_for_load_state = wait_for_load_state
+    page._no_load_patched = True
 
 
 # ---------------------------------------------------------------------------
@@ -281,4 +287,3 @@ def install_cdp_default_context_patch() -> None:
     AsyncStealthySession.start = async_start
 
     _PATCH_INSTALLED = True
-

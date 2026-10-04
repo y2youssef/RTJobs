@@ -1,7 +1,7 @@
 """Wuzzuf job board: Cloudflare-protected SSR search pages, no login."""
 
 import logging
-from boards.base import JobBoard, persist_and_notify
+from boards.base import JobBoard, persist_jobs
 from boards.wuzzuf import scraper
 from config import (
     CHROME_DEBUG_PORT,
@@ -11,6 +11,7 @@ from config import (
     WUZZUF_PROFILE_DIR,
 )
 from core import db, telegram
+from core.scrape_health import ScrapeHealth
 from core.browser import (
     chrome_session,
     install_cdp_default_context_patch,
@@ -39,23 +40,29 @@ class WuzzufBoard(JobBoard):
         # Same Chrome/CDP model as LinkedIn: we launch it so the session is
         # live-attachable on the debug port, and the spider connects to it.
         # The persistent profile keeps the Cloudflare clearance cookie.
-        with chrome_session(
-            WUZZUF_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
-            clean_locks=KILL_CHROME_ON_START,
-        ) as cdp:
-            try:
-                items = scraper.scrape(self.selectors, cdp_url=cdp)
+        try:
+            with chrome_session(
+                WUZZUF_PROFILE_DIR, CHROME_DEBUG_PORT, headless=HEADLESS,
+                clean_locks=KILL_CHROME_ON_START,
+            ) as cdp:
+                try:
+                    health = ScrapeHealth(self.name)
+                    items = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
 
-                new_count, _sent = persist_and_notify(self.name, items)
+                    new_count = persist_jobs(self.name, items)
 
-                _finish("ok", jobs_found=new_count)
-                return new_count
+                    _finish(health.status, jobs_found=new_count, error=health.error)
+                    return new_count
 
-            except BaseException as e:
-                if isinstance(e, SystemExit):
-                    _finish("interrupted", error="terminated by signal")
-                    raise
-                _finish("error", error=str(e))
-                telegram.notify_failure("Wuzzuf board failed", str(e))
-                logger.error(f"[wuzzuf] Run failed: {e}")
-                return 0
+                except BaseException as e:
+                    if isinstance(e, SystemExit):
+                        _finish("interrupted", error="terminated by signal")
+                        raise
+                    _finish("error", error=str(e))
+                    telegram.notify_failure("Wuzzuf board failed", str(e))
+                    logger.error(f"[wuzzuf] Run failed: {e}")
+                    return 0
+        except BaseException as exc:
+            status = "interrupted" if isinstance(exc, SystemExit) else "error"
+            db.finish_run(run_id, status, error=str(exc))
+            raise

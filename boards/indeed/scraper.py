@@ -11,10 +11,11 @@ Data sources:
    (jobkey, displayTitle, company, formattedLocation, extractedSalary,
    jobTypes, pubDate in unix ms, snippet, viewJobLink).
 2. View job page (followed per NEW jobkey only):
+   - `window._rootProps.preloadedVJData` (current standalone layout)
    - `window._initialData` -> ...jobData.results[0].job.description.text
-     (clean plain-text description, latitude/longitude) — PRIMARY
-   - <script type="application/ld+json"> (Schema.org JobPosting) — fallback
-     with HTML description + baseSalary.
+     (older standalone and two-pane layouts)
+   - <script type="application/ld+json"> (Schema.org JobPosting) supplements
+     description, salary, employment types, location and expiry.
 
 Single search URL, sort=date, NO pagination (pagination is login-gated).
 """
@@ -25,6 +26,7 @@ import json
 import random
 import re
 from datetime import datetime
+from functools import partial
 
 from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
@@ -33,6 +35,7 @@ from scrapling.spiders import Request, Response, Spider
 from config import INDEED_SEARCH_URL
 from core import db, markup
 from core.browser import patch_no_load_wait
+from core.scrape_health import ScrapeHealth
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ _CARDS_MARKER = re.compile(
     r'window\.mosaic\.providerData\[\'?"?mosaic-provider-jobcards\'?"?\]\s*=\s*'
 )
 _VIEWJOB_MARKER = re.compile(r"window\._initialData\s*=\s*")
+_ROOTPROPS_MARKER = re.compile(r"window\._rootProps\s*=\s*")
 _LDJSON = re.compile(
     r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
     re.DOTALL,
@@ -63,9 +67,8 @@ def _dig(obj, *keys):
 def _extract_balanced_json(html: str, marker_re: re.Pattern) -> dict:
     """Locate `marker` in the HTML and parse the following `{...}` object.
 
-    Marker regex must end right before the opening brace (it usually matches
-    `... = `). Brace balancing is string-aware (handles braces inside quoted
-    strings and escaped quotes). Returns {} when absent/unparseable.
+    JSONDecoder handles nested braces/escaped strings in C without copying
+    the whole blob into another string. Returns {} when absent/unparseable.
     """
     m = marker_re.search(html or "")
     if not m:
@@ -74,36 +77,9 @@ def _extract_balanced_json(html: str, marker_re: re.Pattern) -> dict:
     if start == -1:
         return {}
 
-    depth = 0
-    in_str = False
-    esc = False
-    k = start
-    while k < len(html):
-        ch = html[k]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-        k += 1
-
-    if depth != 0:
-        logger.warning("[indeed] Unbalanced JSON blob — marker found, brace never closed.")
-        return {}
-
     try:
-        return json.loads(html[start:k + 1])
+        data, _end = json.JSONDecoder().raw_decode(html, start)
+        return data if isinstance(data, dict) else {}
     except (ValueError, TypeError) as e:
         logger.warning(f"[indeed] Could not parse embedded JSON: {e}")
         return {}
@@ -139,7 +115,7 @@ def _jobkey_from_url(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
+def _extract_jobs(html: str, seen_ids: set, lookup_seen: bool = False) -> tuple[list, int, bool]:
     """Parse the search-page job cards blob.
 
     Returns (new_jobs, seen_count, blob_missing). `blob_missing` is True
@@ -152,6 +128,9 @@ def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
     results = _dig(data, "metaData", "mosaicProviderJobCardsModel", "results")
     if not isinstance(results, list):
         return [], 0, True
+    if lookup_seen:
+        seen_ids = seen_ids | db.seen_ids_for("indeed", (
+            item.get("jobkey") for item in results if isinstance(item, dict)))
 
     jobs: list[dict] = []
     seen = 0
@@ -174,6 +153,8 @@ def _extract_jobs(html: str, seen_ids: set) -> tuple[list, int, bool]:
             "location": _clean(
                 item.get("formattedLocation") or item.get("jobLocationCity") or ""
             ),
+            "description_truncated": True,
+            "description_source": "search_snippet",
         }
         if snippet:
             extra["snippet"] = snippet
@@ -227,23 +208,45 @@ def _ldjson_objects(html: str):
             continue
         if isinstance(obj, dict):
             yield obj
+            if isinstance(obj.get("@graph"), list):
+                yield from (o for o in obj["@graph"] if isinstance(o, dict))
         elif isinstance(obj, list):
             yield from (o for o in obj if isinstance(o, dict))
 
 
-def _extract_detail(html: str) -> tuple[str, dict]:
+def _extract_detail(html: str, expected_key: str = "") -> tuple[str, dict]:
     """Parse a viewjob page. Returns (description, extra dict).
 
-    PRIMARY: window._initialData -> jobData.results[0].job.description
+    Current: window._rootProps.preloadedVJData -> jobInfoWrapperModel.
+    Older: window._initialData -> jobData.results[0].job.description
     (.text, else .html stripped) + latitude/longitude. The results list
     sits under hostQueryExecutionResult.data.jobData.results on the
     viewjob page itself, and under
     autoOpenTwoPaneViewjobResponse.body.hostQueryExecutionResult... on the
     search page's two-pane blob — try both.
-    FALLBACK: Schema.org JobPosting ld+json (HTML description + baseSalary).
+    SUPPLEMENT/FALLBACK: typed JobPosting JSON-LD (description + metadata).
     """
     extra: dict = {}
-    data = _extract_balanced_json(html, _VIEWJOB_MARKER)
+    text = ""
+    # Current standalone pages use strict JSON in _rootProps, while
+    # _initialData is a JS object referring to it (not valid JSON).
+    root = _extract_balanced_json(html, _ROOTPROPS_MARKER)
+    view = root.get("preloadedVJData") or {}
+    if not isinstance(view, dict):
+        view = {}
+    if expected_key and view.get("jobKey") not in (None, expected_key):
+        return "", {}
+    data = {} if view else _extract_balanced_json(html, _VIEWJOB_MARKER)
+    info = _dig(view, "jobInfoWrapperModel", "jobInfoModel") or {}
+    if isinstance(info, dict):
+        text = _strip_html(info.get("sanitizedJobDescription"))
+        location = _dig(info, "jobInfoHeaderModel", "formattedLocation") or view.get("jobLocation")
+        if isinstance(location, str) and location:
+            extra["location"] = _clean(location)
+    salary = view.get("salaryInfoModel") or {}
+    if isinstance(salary, dict) and (salary.get("salaryMin") is not None or salary.get("salaryMax") is not None):
+        extra["salary"] = {"min": salary.get("salaryMin"), "max": salary.get("salaryMax"),
+                           "currency": salary.get("salaryCurrency"), "type": salary.get("salaryType")}
 
     if data:
         job = None
@@ -259,9 +262,16 @@ def _extract_detail(html: str) -> tuple[str, dict]:
                 "results",
             ),
         ):
-            if isinstance(base, list) and base and isinstance(base[0], dict):
-                job = base[0].get("job")
-                break
+            if isinstance(base, list):
+                for result in base:
+                    candidate = result.get("job") if isinstance(result, dict) else None
+                    if isinstance(candidate, dict) and (
+                        not expected_key or candidate.get("key") == expected_key
+                    ):
+                        job = candidate
+                        break
+                if job:
+                    break
 
         if isinstance(job, dict):
             desc = job.get("description") or {}
@@ -271,38 +281,86 @@ def _extract_detail(html: str) -> tuple[str, dict]:
 
             geo = job.get("location") or {}
             if isinstance(geo, dict):
+                formatted = geo.get("formatted") or {}
+                location = (formatted.get("long") if isinstance(formatted, dict) else "") or geo.get("fullAddress") or geo.get("city")
+                if location:
+                    extra["location"] = _clean(location)
+                if geo.get("countryCode"):
+                    extra["country"] = geo["countryCode"]
                 if geo.get("latitude") is not None:
                     extra["latitude"] = geo["latitude"]
                 if geo.get("longitude") is not None:
                     extra["longitude"] = geo["longitude"]
 
-            if text:
-                return text, extra
+            for field, source_field in (("job_types", "jobTypes"),
+                                        ("benefits", "benefits"),
+                                        ("shift_and_schedule", "shiftAndSchedule")):
+                values = [item.get("label") for item in job.get(source_field) or []
+                          if isinstance(item, dict) and item.get("label")]
+                if values:
+                    extra[field] = list(dict.fromkeys(values))
 
     # Fallback: Schema.org JobPosting block (prefer the typed one).
     ld_obj = None
     for obj in _ldjson_objects(html):
         types = obj.get("@type")
         if isinstance(types, list) and "JobPosting" in types or types == "JobPosting":
+            ld_key = _jobkey_from_url(obj.get("url") or "")
+            if expected_key and ld_key and ld_key != expected_key:
+                continue
             ld_obj = obj
             break
-        if ld_obj is None:
-            ld_obj = obj
     if ld_obj:
         desc = _strip_html(ld_obj.get("description"))
-        if desc:
-            return desc, extra
+        if not text:
+            text = desc
         base = _dig(ld_obj, "baseSalary", "value")
-        if isinstance(base, dict) and (
-            base.get("minValue") is not None or base.get("maxValue") is not None
-        ):
-            extra["salary"] = {
-                "min": base.get("minValue"),
-                "max": base.get("maxValue"),
+        if isinstance(base, dict):
+            ld_salary = {
+                "min": base.get("minValue", base.get("value")),
+                "max": base.get("maxValue", base.get("value")),
                 "currency": _dig(ld_obj, "baseSalary", "currency"),
+                "type": base.get("unitText"),
             }
+        elif isinstance(base, (int, float)) and not isinstance(base, bool):
+            ld_salary = {"min": base, "max": base,
+                         "currency": _dig(ld_obj, "baseSalary", "currency")}
+        else:
+            ld_salary = {}
+        if ld_salary:
+            existing = extra.setdefault("salary", {})
+            for key, value in ld_salary.items():
+                if existing.get(key) in (None, "") and value is not None:
+                    existing[key] = value
+        employment = ld_obj.get("employmentType")
+        if employment and not extra.get("job_types"):
+            extra["job_types"] = employment if isinstance(employment, list) else [employment]
+        if ld_obj.get("jobLocationType") == "TELECOMMUTE":
+            extra["workplace"] = "Remote"
+        if ld_obj.get("validThrough"):
+            try:
+                expiry = datetime.fromisoformat(ld_obj["validThrough"])
+                extra["expire_at"] = expiry.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError):
+                extra["expire_at_raw"] = ld_obj["validThrough"]
+        places = ld_obj.get("jobLocation") or []
+        if isinstance(places, dict):
+            places = [places]
+        if isinstance(places, list):
+            locations = []
+            for place in places:
+                address = place.get("address") if isinstance(place, dict) else None
+                if isinstance(address, dict):
+                    locality = address.get("addressLocality")
+                    if locality:
+                        locations.append(locality)
+                    country = address.get("addressCountry")
+                    if isinstance(country, str) and country:
+                        extra.setdefault("country", country)
+            if locations:
+                extra.setdefault("location", "; ".join(dict.fromkeys(locations)))
 
-    return "", extra
+    return text, extra
 
 
 class IndeedJobSpider(Spider):
@@ -311,13 +369,18 @@ class IndeedJobSpider(Spider):
     def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
         self.sel = selectors  # unused — data comes from JSON blobs, kept for parity
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("indeed")
+        self.seen_ids: set[str] = set()  # IDs discovered during this run only
 
         self._page_jobs: list[dict] = []
         self._pending: dict[str, dict] = {}  # jobkey -> placeholder job
         self._detail_jobs: dict[str, dict] = {}  # jobkey -> enriched job
         self._queued: set[str] = set()
         self._detail_snapshots = 0
+        # Safety-net flags for the board: logged-out mid-scrape (auth
+        # redirect) or a CF/WAF block page instead of the search page.
+        self._logged_out = False
+        self._blocked = False
+        self.health = ScrapeHealth("indeed")
 
         super().__init__(*args, **kwargs)
 
@@ -342,20 +405,61 @@ class IndeedJobSpider(Spider):
 
     async def scan_search_page(self, page):
         self._page_jobs = []
+        self.health.check("search_fetch", True)
+
+        # Function-local import: boards.indeed.login lives next to this
+        # module (no cycle — login.py never imports the spider).
+        from boards.indeed.login import is_logged_out_url
+
+        try:
+            landed = page.url
+        except Exception:
+            landed = ""
+        if is_logged_out_url(landed):
+            # Session died between the login check and the scrape (or the
+            # login check never ran): stop, don't grind turnstiles.
+            logger.info(f"[indeed] Logged out mid-scrape (landed {landed}).")
+            self._logged_out = True
+            try:
+                markup.save_snapshot("indeed", "logged_out", await page.content())
+            except Exception:
+                pass
+            return
 
         try:
             await page.wait_for_timeout(2500)  # let the SSR blobs land
             html = await page.content()
         except Exception as e:
             logger.info(f"[indeed] Could not read search page: {e}")
+            await self.health.page_failure("search_structure", "Could not read search-page HTML.", page)
             return
 
         if "INDEED_CLOUDFLARE_STATIC_PAGE" in html:
             logger.info("[indeed] Cloudflare challenge page detected.")
             markup.save_snapshot("indeed", "cloudflare_challenge", html)
+            self._blocked = True
             return
 
-        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids)
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        if ("Just a moment" in title or "Blocked" in title
+                or "Access Denied" in html):
+            logger.info(f"[indeed] Block page instead of search (title {title!r}).")
+            markup.save_snapshot("indeed", "blocked_page", html)
+            self._blocked = True
+            return
+
+        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids, lookup_seen=True)
+        self.health.check("search_structure", not blob_missing,
+                          "The mosaic jobcards JSON or its results array is missing/unparseable.", html)
+        if not blob_missing:
+            data = _extract_balanced_json(html, _CARDS_MARKER)
+            cards = _dig(data, "metaData", "mosaicProviderJobCardsModel", "results")
+            self.health.check("card_identity", len(cards) == len(jobs) + seen,
+                              f"Source has {len(cards)} cards; parsed {len(jobs)} new + {seen} known. Check jobkey fields.", html)
+        self.health.job_fields(jobs, html, description=False)
         self._page_jobs = jobs
         for job in jobs:
             self.seen_ids.add(job["external_id"])
@@ -367,8 +471,9 @@ class IndeedJobSpider(Spider):
         if blob_missing and not jobs:
             markup.save_snapshot("indeed", "search_empty", html)
 
-    async def scan_detail_page(self, page):
-        key = _jobkey_from_url(page.url)
+    async def scan_detail_page(self, page, key: str = ""):
+        # Keep the requested identity even if the page redirects to login.
+        key = key or _jobkey_from_url(page.url)
         job = self._pending.get(key)
         if job is None:
             return
@@ -381,25 +486,41 @@ class IndeedJobSpider(Spider):
             logger.warning(f"[indeed] Detail read failed for {key}: {e}")
             html = ""
 
-        desc, extra = _extract_detail(html)
+        desc, extra = _extract_detail(html, expected_key=key)
+        self.health.check("detail_description", bool(desc),
+                          f"Job {key}: detail page yielded no full description; the search snippet was retained.", html)
         if desc:
             job["description"] = desc
+            job["extra"]["description_truncated"] = False
+            job["extra"]["description_source"] = "detail"
         else:
+            job["extra"]["detail_status"] = "unavailable"
             logger.warning(f"[indeed] No description parsed for {key}")
             if self._detail_snapshots < 2:
                 markup.save_snapshot("indeed", "detail_no_desc", html)
                 self._detail_snapshots += 1
         for field, value in extra.items():
-            job["extra"].setdefault(field, value)
+            if field == "salary" and isinstance(value, dict):
+                # Search metadata can have a range but omit currency/period.
+                salary = job["extra"].setdefault("salary", {})
+                for name, amount in value.items():
+                    if salary.get(name) in (None, "") and amount is not None:
+                        salary[name] = amount
+            elif not job["extra"].get(field):
+                job["extra"][field] = value
 
         self._detail_jobs[key] = job
 
     async def parse(self, response: Response):
+        if self._logged_out or self._blocked:
+            return
+
         for job in self._page_jobs:
             key = job["external_id"]
             if key in self._queued or len(self._queued) >= _MAX_DETAIL_FETCHES:
                 # Detail cap hit — keep the snippet as the description.
                 logger.warning(f"[indeed] Detail fetch skipped for {key} (cap reached)")
+                job["extra"]["detail_status"] = "cap_reached"
                 yield job
                 continue
 
@@ -407,24 +528,45 @@ class IndeedJobSpider(Spider):
             self._queued.add(key)
             yield Request(
                 f"{_BASE_URL}/viewjob?jk={key}",
-                callback=self.parse_job_detail,
+                callback=partial(self.parse_job_detail, key=key),
                 sid="stealth",
-                page_action=self.scan_detail_page,
+                page_action=partial(self.scan_detail_page, key=key),
             )
 
-    async def parse_job_detail(self, response: Response):
-        key = _jobkey_from_url(response.url)
+    async def parse_job_detail(self, response: Response, key: str = ""):
+        key = key or _jobkey_from_url(response.url)
         job = self._detail_jobs.pop(key, None)
         if job is not None:
+            self._pending.pop(key, None)
             yield job
 
 
-def scrape(selectors: dict, cdp_url: str) -> list[dict]:
-    """Run the spider and return the scraped job dicts."""
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:
+    """Run the spider. Returns {'items': [...], 'logged_out': bool,
+    'blocked': bool} (mirrors the LinkedIn scrape contract)."""
     spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url)
+    if health is not None:
+        spider.health = health
     result = spider.start()
     items = list(result.items)
+    # A failed detail request may never call its callback. Preserve its search
+    # card so an unavailable detail page cannot silently discard a whole job.
+    yielded = {job["external_id"] for job in items}
+    for key, job in spider._pending.items():
+        if key not in yielded:
+            job["extra"]["description_truncated"] = True
+            job["extra"]["detail_status"] = "fetch_failed"
+            items.append(job)
+    if spider._queued:
+        failed = len(spider._pending)
+        spider.health.check("detail_fetch", not failed,
+                            f"{failed}/{len(spider._queued)} requested detail pages never completed; search cards were retained.")
+    spider.health.report()
     logger.info(
         f"[indeed] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return items
+    return {
+        "items": items,
+        "logged_out": spider._logged_out,
+        "blocked": spider._blocked,
+    }

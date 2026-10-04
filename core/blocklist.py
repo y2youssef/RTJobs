@@ -58,6 +58,7 @@ def _load() -> dict:
 
 def is_blocked(source: str, company: str) -> bool:
     """True when the job's company matches an entry for its source or '*'."""
+    source = _normalize(source)
     name = _normalize(company)
     if not name:
         return False

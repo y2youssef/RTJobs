@@ -1,9 +1,5 @@
-scrapling[all]==0.4.12
-playwright==1.61.0
-patchright==1.61.2
+scrapling[all]==0.4.15
+playwright==1.63.0
+patchright==1.63.0
 requests==2.34.2
 python-dotenv==1.2.2
-# analysis-only (charts.py runs locally, never in the scraper container)
-matplotlib==3.11.1
-seaborn==0.13.2
-plotly==7.0.0

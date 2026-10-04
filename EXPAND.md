@@ -1,99 +1,70 @@
-# EXPAND.md — RTJobs scale-up: classify at scrape, per-dept channels, Gulf
+# RTJobs classification reset — job_family_v2
 
-## 0. Locked decisions
-- Channels: per country × per department (`EG|Sales & Business Development`
-  → chat id). 20 departments × 5 countries (EG/SA/AE/QA/KW) = up to 100
-  slots, but ONLY pairs present in the map get traffic; everything else →
-  fallback (today's channel). Start: top ~6 depts × 5 ≈ 30 + fallback.
-  Channels are hand-created; bot added as admin; IDs pasted into
-  `TELEGRAM_CHANNELS_JSON`. Verify with `scripts/ping_channels.py`.
-- Countries: EG (live) → SA + AE + QA + KW (full Gulf).
-- Unclassifiable → fallback channel. Nothing is ever silently dropped.
-- Phase 0 first: keyword-only routing, no API key, no new infra.
-- LLM: OpenRouter as Tier-2 fallback on DeepSeek 4.1 (see §8 for model ID
-  + cost math). Heavy da_guide extraction stays async, out of the loop.
-- LinkedIn: one account PER COUNTRY, parallel per-country services
-  (not round-robin). Accounts do NOT exist yet — creation + warm-up is
-  step zero. Staggered crons, never simultaneous (single egress IP).
-- New boards: NaukriGulf + Bayt, each shipped disabled until its own
-  verified live run.
+The 2026-10-04 professional-family specification replaces the previous industry/department classifier. There are **25 named job families plus `other`: 26 canonical categories**. Employer sector is a separate analytics axis and never selects a Telegram channel. The old plan is preserved only in [the archive](docs/archive/EXPAND-industry-v1.md).
 
-## 1. Target architecture
-```
-Scrape (board × country service)
-  → Tier-1 keyword classify (core/dept_rules.py — free, ~97% hit)
-  → Tier-2 OpenRouter/DeepSeek-4.1 on misses only (pennies, cached)
-  → persist (extra.department + extra.country)
-  → route to country|dept channel (fallback otherwise)
-```
-Analytics pipeline (extraction → analysis → charts) UNCHANGED.
+## Current authorization
 
-## 2. Step 0 — accounts & channels (human, before code matters)
-1. Create + phone-verify 4 LinkedIn accounts (SA/AE/QA/KW). Light human
-   use ~1–2 weeks (new accounts have tight search-view limits).
-2. Hand-create channels: `RTJobs EG | Sales & Business Development`, … —
-   country code + dept VERBATIM (the router matches on it). Bot → admin.
-3. Collect chat IDs, fill `TELEGRAM_CHANNELS_JSON`, run ping script.
+The user authorized production classification and job-family channel delivery on 2026-10-04, following the disabled staging tests. Both flags remain false by default in the public template; the production `.env` explicitly enables them. Do not reclassify the historical corpus implicitly.
 
-## 3. Build order (code)
-1. **DB groundwork** — D2 (`idx_jobs_notified_source`, 90-day `seen_ids`
-   retention) + D8 (batched writes) + WAL mode. Needed before concurrency.
-2. **Classifier** — `core/dept_rules.py` (title→dept, Arabic-aware) +
-   `core/classify.py` (rules → OpenRouter → fallback), SQLite cache on
-   normalized (title, company), spend cap + per-run cost log. Tests.
-3. **Pipeline** — `persist_and_notify` classifies pre-save; `country` attr
-   per board; `notify_jobs` routes by `country|dept` with flag prefix
-   (🇪🇬🇸🇦🇦🇪🇶🇦🇰🇼); D3 per-channel backlog caps; D5 telegram hardening;
-   D4 truncated-description marker (classifier input quality).
-4. **LinkedIn per-country services** — `LINKEDIN_ACCOUNTS_JSON`
-   (geo → creds/profile/port/cron-offset); compose
-   `scraper-linkedin-{eg,sa,ae,qa,kw}` sharing one image; CDP 9222–9226;
-   staggered ofelia schedules; per-service healthchecks. Missing creds →
-   graceful no-op (exit 0 + warning), never crash-loop.
-5. **Other countries** — Indeed `sa/ae/qa/kw` domains (single service,
-   internal loop); Wuzzuf EG-only untouched; `external_id`
-   country-prefixed to avoid cross-country dedupe collisions.
-6. **NaukriGulf + Bayt** — anti-bot recon each → Spider + selectors +
-   profile volume + `*_ENABLED=false` until verified live. Gulf region
-   tables (Riyadh→Riyadh Province, …) + per-market blocklist review.
-7. **Verify** — offline routing/classifier tests, channel ping, one live
-   run per new piece. Rollback = empty channel map + toggles off.
+## Source of truth
 
-## 4. Config reference (new env)
-```
-OPENROUTER_API_KEY=            # Tier-2 LLM
-CLASSIFIER_MODEL=deepseek/deepseek-4.1   # confirm exact ID on OpenRouter; overridable
-TELEGRAM_CHANNELS_JSON={"EG|Sales & Business Development":"-100xxx", ...}
-LINKEDIN_ACCOUNTS_JSON={"EG":{"email":..,"password":..,"geoId":"106155005","profile":"chromeprofile","port":9222}, ...}
-NAUKRIGULF_ENABLED=false
-BAYT_ENABLED=false
-```
+- [Prompt](markup/enrichment/prompt.txt): extraction, professional boundaries, evidence precedence and no-fabrication rules.
+- [Taxonomy](markup/enrichment/taxonomy.json): families, valid specializations and analytics-only employer sectors.
+- [Strict output schema](markup/enrichment/schema.json): `{ "jobs": [...] }`, exactly one matching result per input job.
+- `TELEGRAM_CHANNELS_JSON` in private `.env`: canonical job-family key to Telegram ID, with no industry or country composite keys. The [environment template](.env.example) lists all 26 keys with empty values.
+- [Channel sanity check](docs/channel-audit.md): actual titles, IDs and posting permissions.
 
-## 5. Cost model — DeepSeek 4.1 classification (Sep-2026 pricing)
-Classify-only prompt ≈ 300 tokens in / ~30 out. DeepSeek V4-Flash-class
-≈ $0.14/M input + $0.28/M output (OpenRouter similar; confirm exact 4.1
-rate on the model page — Nano/Flash-class ranges $0.02–0.14/M in).
+## Egypt channels
 
-| Daily volume | All-LLM (no rules) | Rules-first (~5% hit API) |
-|---|---|---|
-| 770 jobs (today) | ~$0.04/day ≈ **$1.20/mo** | **≈ $0.06/mo** |
-| 5,000 jobs/day | ~$0.25/day ≈ **$7.50/mo** | **≈ $0.40/mo** |
-| 20,000 jobs/day | ~$1.00/day ≈ **$30/mo** | **≈ $1.50/mo** |
+Expected Telegram titles start with RTJobs and end with 🇪🇬. The configured bot is @suggestmeabotnamebot. IDs were checked with getChat and getChatMember; no test messages were sent.
 
-Rules-first is the whole game: the keyword tier resolves ~95%+ for free,
-the API only sees genuine ambiguities (each cached, never re-paid).
-OpenRouter spend limit = hard ceiling regardless. Extraction/analytics
-costs unchanged (async, already sunk). Telegram: free within rate limits;
-0.3s/msg pacing × channels is the throttle, not money.
+Sales / Business Development: [configured in .env]
+Accounting / Finance / Banking: [configured in .env]
+Customer Service / Call Center: [configured in .env]
+Human Resources / Recruitment: [configured in .env]
+Marketing / E-commerce: [configured in .env]
+Software Engineering: [configured in .env]
+Data / AI / Analytics: [configured in .env]
+IT / Cloud / Cybersecurity: [configured in .env]
+Engineering / Construction: [configured in .env]
+Industrial / Manufacturing / Maintenance: [configured in .env]
+Supply Chain / Procurement / Logistics: [configured in .env]
+Operations / Projects / Quality: [configured in .env]
+Administration / Office Support: [configured in .env]
+Design / Creative: [configured in .env]
+Content / Media / Communications: [configured in .env]
+Healthcare / Medical: [configured in .env]
+Education / Training: [configured in .env]
+Legal / Compliance / Risk: [configured in .env]
+Product / Business Analysis: [configured in .env]
+Hospitality / Tourism / Food Service: [configured in .env]
+Retail / Store Operations: [configured in .env]
+Safety / Security / Facilities: [configured in .env]
+Science / Research: [configured in .env]
+Consulting / Strategy: [configured in .env]
+General Management: [configured in .env]
+Other / Unclassified: [configured in .env]
 
-## 6. Risks
-- **Single egress IP × 5 accounts** is the top risk (weeks 1–2 especially).
-  Staggering mitigates; residential proxies are the escape hatch.
-- Checkpoint/2FA babysitting ×5 accounts — the real ongoing human cost.
-- RAM: 5 headful Chromes ≈ 1.5–2.5 GB + other boards; confirm headroom.
-- New-account search limits: new geos start slow, ramp after warm-up.
-- Blocklist is substring-based: review per market (`=` exact-match exists).
-- Location tables are EG-centric: Gulf regions needed before Gulf
-  analytics make sense (§6 does this).
-- NaukriGulf/Bayt anti-bot unknown until recon — could need the full
-  stealth playbook (AGENTS.md #1–2) or manual profile seeding.
+## Classification contract
+
+Route by `classification.job_family` only. Specialization must belong to that family. Low confidence and `other` require `needs_review=true`; `other` also requires Low confidence. Explicit contradictory evidence is flagged. Review flags are retained for inspection, and no posting is silently discarded.
+
+Raw fields stay in `jobs`; normalized enrichment stays in `job_enrichments` in the same SQLite database. The API processes one job per call inside the requested jobs-array envelope, avoiding cross-job contamination. Batch validation checks identity/cardinality and accepts reordered valid IDs without mixing results.
+
+Explicit title seniority wins over experience. Salary, currency, work setup, languages, technologies, certifications and candidate restrictions are extracted only when supported. No hard_skills, soft_skills, domain_skills or global competencies ranking is produced. `posting_entity_type=unknown` is a valid enum; missing factual scalars use null.
+
+The schema and prompt change the result-cache namespace. Legacy industry results remain auditable as obsolete and are not eligible for family delivery. A migration does not enqueue old jobs. Failed model calls retry with bounded backoff and eventually create explicit Other/Low/review fallbacks, which are not cached as successful enrichment.
+
+## Analytics outside the LLM
+
+`core/analytics.py` computes rolling 15-minute/1-hour/24-hour/7-day/30-day counts, family/specialization/sector demand and the family × sector matrix, seniority trends, experience distributions, work setup, governorates, tools, certifications, languages, posting patterns, employer velocity, unique employers, posting-entity shares and disclosure rates.
+
+Salary percentiles compare explicit lower and upper bounds separately, grouped by currency, period and net/gross basis; no inferred salary, currency conversion or period conversion. Reports expose enrichment coverage and exclude provider-fallback results from extraction/disclosure denominators. Employer counts normalize case/whitespace, not legal entity identities.
+
+`scripts/report_enrichment.py --db PATH --output REPORT.json --html DASHBOARD.html` reads a migrated database without writes. The standalone dashboard shows family × sector, named tools and certifications. It needs the optional analysis dependencies for HTML charts. The legacy `dataanalysis/` directory was removed at the user's request; current reports start from the new enrichment contract.
+
+## Verification
+
+Run `.venv/bin/python scripts/verify_offline.py` for parser, schema, migration, cache, family-routing, delivery-off and analytics checks. Run `.venv/bin/python scripts/check_channels.py` for a fresh read-only channel audit. Opt-in paid fixtures: `.venv/bin/python scripts/evaluate_classifier.py --live --output /tmp/classifier-eval.json`.
+
+All 26 channels passed the read-only check on 2026-10-04, including General Management. Rerun the checker before deployment. Classified delivery requires both enable flags and a complete environment channel map with unique IDs.

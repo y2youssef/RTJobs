@@ -9,15 +9,22 @@ import logging
 import asyncio
 import random
 import re
+import time
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from scrapling import Selector
 from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
-from config import LINKEDIN_SEARCH_URL
+from config import (LINKEDIN_SEARCH_URL, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS,
+                    LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS,
+                    LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS,
+                    LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS)
 from core import db, markup
 from core.browser import patch_no_load_wait
+from core.browser_diagnostics import BrowserDiagnostics
+from core.scrape_health import ScrapeHealth
 
 logger = logging.getLogger(__name__)
 
@@ -91,17 +98,56 @@ def _parse_detail_header(header_text: str, pill_texts: list) -> dict:
             "job_type": job_type}
 
 
+def _company_metadata(sel: Selector, selectors: dict) -> dict:
+    """Preserve explicit employer context independently of the role's text."""
+    extra = {}
+    if selectors.get("company_industry"):
+        text = _text(sel, selectors["company_industry"], separator="\n")
+        industry = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if industry:
+            extra["company_industry"] = industry
+    if selectors.get("company_description"):
+        for element in sel.css(selectors["company_description"]):
+            text = re.sub(r"\s+", " ", element.get_all_text(separator=" ")).strip()
+            text = re.sub(r"\s*(?:…\s*)?show more\s*$", "", text, flags=re.I)
+            if text:
+                extra["company_description"] = text
+                break
+    return extra
+
+
+def _search_failure_detail(html: str, selectors: dict, stage: str, error_type: str) -> str:
+    """Describe the captured DOM without guessing why rendering failed."""
+    if not html:
+        return f"Search failed while {stage} ({error_type}); page content was unavailable."
+    page = Selector(html)
+    cards = len(page.css(selectors["job_card"]))
+    lists = len(page.css(selectors["results_list"]))
+    if page.css(selectors["login_redirect"]):
+        reason = "Sign-in form is present on the search page; check session expiry."
+    elif (not cards and not lists and selectors.get("loading_shell")
+          and page.css(selectors["loading_shell"])):
+        reason = ("LinkedIn is stuck on its startup/loading screen; no job cards or results list rendered. "
+                  "The snapshot does not establish the cause of the loading failure.")
+    else:
+        reason = f"Search DOM contains {cards} cards and {lists} results lists; check loading or selector changes."
+    return f"{reason} Failed while {stage} ({error_type})."
+
+
 class LinkedInJobSpider(Spider):
     name = "linkedin_job_spider"
 
     def __init__(self, selectors: dict, cdp_url: str, *args, **kwargs):
         self.sel = selectors
         self.cdp_url = cdp_url
-        self.seen_ids = db.load_seen_ids("linkedin")
+        self.seen_ids: set[str] = set()  # IDs discovered during this run only
 
         self._page_jobs: list[dict] = []
         self._repeat_found: bool = False
         self._login_redirect: bool = False
+        self._detail_failures: dict[str, str] = {}
+        self.health = ScrapeHealth("linkedin")
+        self.diagnostics = BrowserDiagnostics({"www.linkedin.com", "linkedin.com", "static.licdn.com"})
 
         super().__init__(*args, **kwargs)
 
@@ -112,9 +158,91 @@ class LinkedInJobSpider(Spider):
                 cdp_url=self.cdp_url,
                 disable_resources=True,
                 timeout=60_000,
-                page_setup=patch_no_load_wait,
+                retry_delay=LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
+                page_setup=self.setup_search_page,
             ),
         )
+
+    async def setup_search_page(self, page):
+        await patch_no_load_wait(page)
+        self.diagnostics.reset()
+        self.diagnostics.attach(page)
+
+    async def on_error(self, request: Request, error: Exception):
+        # Called after scrapling exhausts its three navigation attempts. This
+        # also covers a later pagination request failing after earlier success.
+        self.diagnostics.navigation_error(error)
+        self.health.check("search_fetch", False,
+                          "Search navigation failed after retries. Evidence: " + self.diagnostics.summary())
+
+    def _access_blocked(self, page, html: str) -> bool:
+        """Login/checkpoints and explicit access/rate limits need a later run."""
+        path = urlsplit(page.url or "").path.lower()
+        if any(part in path for part in ("/login", "/checkpoint", "/authwall", "/security-verification")):
+            return True
+        if self.diagnostics.access_status in (401, 403, 429):
+            return True
+        return bool(html and Selector(html).css(self.sel["search"]["login_redirect"]))
+
+    async def _wait_for_search(self, page) -> bool:
+        """Retry a stalled load once; keep terminal evidence only if it persists."""
+        target = page.url
+        stage = "waiting for job cards"
+        html = ""
+        last_error = "TimeoutError"
+        if self._access_blocked(page, ""):
+            try:
+                initial_html = await page.content()
+            except Exception:
+                initial_html = ""
+            detail = "LinkedIn search requires sign-in/checkpoint handling or returned an access/rate-limit error. "
+            self.health.check("search_structure", False, detail + self.diagnostics.summary(), initial_html)
+            self._repeat_found = True
+            return False
+        for attempt in range(LINKEDIN_SEARCH_RECOVERY_ATTEMPTS + 1):
+            deadline = time.monotonic() + (LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS if attempt else 30)
+            def remaining_ms():
+                # Playwright treats timeout=0 as unlimited, so always use >=1.
+                return max(1, int((deadline - time.monotonic()) * 1000))
+            if attempt:
+                logger.info("[linkedin] Retrying stalled search (%s/%s); previous evidence: %s",
+                            attempt, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS, self.diagnostics.summary())
+                self.diagnostics.reset()
+                stage = "reloading search"
+                try:
+                    await page.goto(target, wait_until="domcontentloaded", timeout=remaining_ms())
+                except Exception as exc:
+                    # A navigation timeout can leave a usable DOM. Spend only
+                    # the remainder of this attempt's deadline checking it.
+                    last_error = type(exc).__name__
+                    self.diagnostics.navigation_error(exc)
+                    logger.warning("[linkedin] Recovery navigation: %s", last_error)
+            try:
+                stage = "waiting for job cards"
+                await page.wait_for_selector(self.sel["search"]["job_card"], timeout=remaining_ms())
+                stage = "scrolling the results list"
+                pane = page.locator(self.sel["search"]["results_list"]).first
+                for _ in range(4):
+                    await pane.evaluate("el => el.scrollTop += 1000", timeout=remaining_ms())
+                    await asyncio.sleep(0.8)
+                if attempt:
+                    logger.info("[linkedin] Search recovered after %s retry; continuing normal extraction.", attempt)
+                return True
+            except Exception as exc:
+                last_error = type(exc).__name__
+                logger.warning("[linkedin] Search attempt %s failed while %s: %s", attempt + 1, stage, last_error)
+                try:
+                    html = await page.content()
+                except Exception:
+                    html = ""
+                if self._access_blocked(page, html):
+                    stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
+                    break
+        detail = _search_failure_detail(html, self.sel["search"], stage, last_error)
+        detail += " Evidence: " + self.diagnostics.summary()
+        self.health.check("search_structure", False, detail, html)
+        self._repeat_found = True
+        return False
 
     async def start_requests(self):
         yield Request(
@@ -126,30 +254,30 @@ class LinkedInJobSpider(Spider):
 
     async def deep_scan_page(self, page):
         self._page_jobs = []
+        self._detail_failures = {}
+        self.health.check("search_fetch", True)
         found_at_least_one_duplicate = False
 
-        try:
-            await page.wait_for_selector(
-                self.sel["search"]["job_card"], timeout=30_000
-            )
-
-            pane = page.locator(self.sel["search"]["results_list"]).first
-            for _ in range(4):
-                await pane.evaluate("el => el.scrollTop += 1000")
-                await asyncio.sleep(0.8)
-        except Exception as e:
-            logger.warning(f"[warn] Card list never appeared: {e}")
+        if not await self._wait_for_search(page):
             return
 
         cards = await page.locator(self.sel["search"]["job_card"]).all()
+        card_ids = [(card, await card.get_attribute(self.sel["search"]["job_id_attr"]))
+                    for card in cards]
+        usable = sum(bool(key) for _, key in card_ids)
+        if not usable:
+            await self.health.page_failure("search_structure", f"Found {len(cards)} cards but no usable job IDs.", page)
+            self._repeat_found = True
+            return
+        self.health.check("search_structure", True)
+        known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
 
         jobs_to_scrape_now = []
-        for card in cards:
-            job_id = await card.get_attribute(self.sel["search"]["job_id_attr"])
+        for card, job_id in card_ids:
             if not job_id:
                 continue
 
-            if str(job_id) in self.seen_ids:
+            if str(job_id) in known_ids:
                 found_at_least_one_duplicate = True
             else:
                 jobs_to_scrape_now.append((card, job_id))
@@ -166,6 +294,17 @@ class LinkedInJobSpider(Spider):
                 self._page_jobs.append(job)
                 self.seen_ids.add(str(job_id))
 
+        if jobs_to_scrape_now:
+            failures = len(jobs_to_scrape_now) - len(self._page_jobs)
+            if failures:
+                reasons = "; ".join(f"{key}: {value}" for key, value in list(self._detail_failures.items())[:3])
+                await self.health.page_failure("detail_fetch",
+                    f"{failures}/{len(jobs_to_scrape_now)} new cards produced no job after recovery. "
+                    f"{reasons}. Evidence: {self.diagnostics.summary()}", page)
+            else:
+                self.health.check("detail_fetch", True)
+            self.health.job_fields(self._page_jobs)
+
         if found_at_least_one_duplicate:
             logger.info("[stop] Duplicate detected on this page — no next page.")
             self._repeat_found = True
@@ -181,16 +320,7 @@ class LinkedInJobSpider(Spider):
 
     async def _scrape_card(self, page, card, job_id: str) -> dict | None:
         try:
-            await card.scroll_into_view_if_needed()
-            await asyncio.sleep(random.uniform(0.8, 2.2))
-            await card.click()
-
-            try:
-                await page.wait_for_selector(
-                    self.sel["search"]["detail_panel"], timeout=_DETAIL_TIMEOUT
-                )
-            except Exception:
-                logger.warning(f"[warn] Detail panel timed out for {job_id} — skipping")
+            if not await self._open_card(page, card, job_id):
                 return None
 
             if (
@@ -218,7 +348,20 @@ class LinkedInJobSpider(Spider):
             # Small extra settle for title/description to finish hydrating.
             await asyncio.sleep(random.uniform(0.5, 1.0))
 
-            html = await page.content()
+            # Serialize ONLY the detail panel container instead of the whole
+            # page (~15 KB vs ~550 KB per card) — the old full-page
+            # page.content() per job dominated the run's CPU/memory. All
+            # job_detail selectors are descendants of the panel container
+            # (verified against markup/linkedin snapshots). Falls back to
+            # the full page if the panel locator is gone (layout change /
+            # slow hydration).
+            try:
+                html = await page.locator(d["panel"]).first.inner_html()
+            except Exception:
+                html = ""
+            if not html.strip():
+                logger.warning(f"[warn] Panel empty for {job_id} — full page fallback")
+                html = await page.content()
             sel = Selector(html)
 
             title = _text(sel, d["title"])
@@ -284,8 +427,12 @@ class LinkedInJobSpider(Spider):
 
             if not company:
                 # Still empty after fallbacks — keep markup for debugging.
-                markup.save_snapshot("linkedin", "company_missing", html)
+                snapshot = markup.save_snapshot("linkedin", "company_missing", html)
+                self.health.snapshot = self.health.snapshot or snapshot
                 logger.warning(f"  [warn] Company name not parsed for {job_id}")
+
+            self.health.check("detail_content", bool(title and desc),
+                              f"Job {job_id}: title present={bool(title)}, description present={bool(desc)}.", html)
 
             logger.info(f"  [ok] {title[:45]}")
             return {
@@ -297,6 +444,7 @@ class LinkedInJobSpider(Spider):
                 "description": desc,
                 "link": f"https://www.linkedin.com/jobs/view/{job_id}/",
                 "extra": {
+                    **_company_metadata(sel, d),
                     "hiring_manager_name": mgr_name,
                     "hiring_manager_role": mgr_role,
                     "detail_location": header["detail_location"],
@@ -306,8 +454,45 @@ class LinkedInJobSpider(Spider):
                 "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
         except Exception as e:
+            self._detail_failures[str(job_id)] = type(e).__name__
             logger.error(f"[error] Job {job_id}: {e}")
             return None
+
+    async def _open_card(self, page, card, job_id: str) -> bool:
+        """Retry a slow detail once and require the requested job's title link.
+
+        Waiting for any existing detail panel can capture the previous card's
+        description under the new ID. A matching title link prevents that race.
+        """
+        for attempt, timeout in enumerate((_DETAIL_TIMEOUT, LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS * 1000)):
+            try:
+                deadline = time.monotonic() + timeout / 1000
+                def remaining_ms():
+                    return max(1, int((deadline - time.monotonic()) * 1000))
+                await card.scroll_into_view_if_needed(timeout=remaining_ms())
+                await asyncio.sleep(random.uniform(0.8, 1.2))
+                await card.click(timeout=remaining_ms())
+                await page.wait_for_selector(
+                    self.sel["job_detail"]["title_link_for_job"].format(job_id=job_id), timeout=remaining_ms())
+                await page.wait_for_selector(self.sel["search"]["detail_panel"], timeout=remaining_ms())
+                self._detail_failures.pop(str(job_id), None)
+                if attempt:
+                    logger.info("[linkedin] Detail %s recovered on retry.", job_id)
+                return True
+            except Exception as exc:
+                self._detail_failures[str(job_id)] = type(exc).__name__ + " waiting for matching job detail"
+                try:
+                    html = await page.content()
+                except Exception:
+                    html = ""
+                if self._access_blocked(page, html):
+                    self._detail_failures[str(job_id)] = "LinkedIn login/checkpoint/access restriction"
+                    return False
+                if not attempt:
+                    logger.info("[linkedin] Detail %s did not load; retrying once with up to %ss.",
+                                job_id, LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS)
+        logger.warning("[linkedin] Detail %s failed after two attempts.", job_id)
+        return False
 
     async def parse(self, response: Response):
         for job in self._page_jobs:
@@ -337,11 +522,19 @@ class LinkedInJobSpider(Spider):
         )
 
 
-def scrape(selectors: dict, cdp_url: str) -> dict:
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:
     """Run the spider. Returns {'items': [...], 'login_redirect': bool}."""
     spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
+    if health is not None:
+        spider.health = health
     result = spider.start()
     items = list(result.items)
+    if "search_fetch" not in spider.health.checks:
+        spider.health.check("search_fetch", False,
+                            "Search navigation never reached the parser. Evidence: " + spider.diagnostics.summary())
+    elif "search_structure" not in spider.health.checks and spider.health.checks["search_fetch"]["good"]:
+        spider.health.check("search_structure", False, "The search callback did not finish checking the page. Check scraper logs.")
+    spider.health.report()
     logger.info(
         f"[spider] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )

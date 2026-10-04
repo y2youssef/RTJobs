@@ -1,0 +1,5 @@
+# Optional local charting tools; excluded from the scraper image.
+-r requirements.txt
+matplotlib==3.11.1
+seaborn==0.13.2
+plotly==7.0.0

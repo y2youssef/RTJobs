@@ -25,7 +25,9 @@ extraction/parsing functions against the fixture files in `markup/` (see
 ```
 main.py                  orchestrator; BOARDS list; --reset-login
 config.py                ALL env config (single source of truth)
-core/db.py               SQLite: jobs, seen_ids, runs, login_state
+core/db.py               SQLite: raw jobs, dedupe, runs, enrichment/cache/spend, scrape_health
+core/scrape_health.py    parser checks + persistent error-channel alert dedupe
+core/enrichment_worker.py optional browser-free OpenRouter worker (default disabled)
 core/telegram.py         notify_jobs (jobs channel) / notify_failure (alert channel)
 core/markup.py           sanitized HTML snapshots -> markup/<site>/snapshots/<kind>/
 core/login_state.py      LinkedIn retry counter + escalating cooldown (5m/15m/30m)
@@ -69,11 +71,11 @@ description, link, extra(dict), scraped_at`.
    `window.Wuzzuf.initialStoreState.job.collection` (full entities: HTML
    description/requirements, exact `postedAt` `MM/DD/YYYY HH:MM:SS`,
    salary, career level…). It is parsed from `page.content()` with marker
-   regex + brace balancing (`_extract_state`) — NOT `page.evaluate`
+   regex + JSONDecoder.raw_decode (`_extract_state`) — NOT `page.evaluate`
    (evaluate silently failed under stealth isolated contexts).
 4. **Wuzzuf pagination** is a page index: `?q=&start=0`, `start=1`, …
    (15 jobs/page). Stop condition: first `external_id` already in
-   `seen_ids` (default sort is by date). Job id = numeric prefix of the
+   `seen_ids` (default sort is by date). Job id = first hyphen-separated component of the
    slug: `/jobs/p/<id>-<slug>`.
 5. **LinkedIn login**: fetch `https://www.linkedin.com/login`, fill with
    human-like typing (EN+AR aware), then `_verify_routing` waits
@@ -120,12 +122,22 @@ Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
 (failure channel; override: `TELEGRAM_FAILURE_CHAT_ID`),
 `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`.
 Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
-(now `True` in `.env`), `HEADLESS`,
+(now `True` in `.env` — re-enabled Oct 2026 with Telegram-assisted login:
+anonymous sessions 403-redirect to `/account/login?...&from=bot-detection-anonymous`,
+so the board signs in by email code — run drives the form, user replies/DMs
+the 6-digit code to the bot, getUpdates long-poll consumes it; session
+persists in the `indeed_profile` volume, re-login only on expiry with a
+30-min cooldown. See INDEED.md "Login"), `HEADLESS`,
 `DATA_DIR`, `MARKUP_DIR`, `CHROME_DEBUG_PORT=9222`,
 `CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`, `WUZZUF_SEARCH_URL`,
 `*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`).
 
 ## Current state / how things were last verified
+- Runtime pins updated 2026-10-04: Scrapling 0.4.15, Playwright/Patchright 1.63.0.
+  Scrapling now reuses tabs: keep page setup idempotent and diagnostics bounded.
+  Sync/async CDP default-context cookies and live samples from all three boards
+  passed upgrade checks. Upstream caps repeated Cloudflare solve attempts at
+  three; this is not an overall deadline for every wait in the solver.
 - Docker hosting verified end-to-end on this machine: ofelia fires every
   6 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
   `chrome_profile` volume) + Wuzzuf scrape → SQLite + Telegram.
@@ -138,11 +150,15 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
 - Indeed: single sort=date search page (~15 jobs, no pagination — login-gated),
   JSON blobs only (no CSS selectors): `window.mosaic.providerData["mosaic-provider-jobcards"]`
   for cards + follow-up `/viewjob?jk=` fetch per NEW jobkey for the description
-  (`window._initialData` -> `hostQueryExecutionResult.data.jobData.results[0].job` —
+  (`window._rootProps.preloadedVJData` on current standalone pages; older
+  `window._initialData` -> `hostQueryExecutionResult.data.jobData.results[0].job` —
   NOTE the search page's two-pane blob uses the `autoOpenTwoPaneViewjobResponse.body.`
   prefix instead; ld+json is the fallback). `pubDate` is normalized to midnight —
-  always prefer `createDate`. Verified live: CF solved via persistent profile,
-  detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder when skipped).
+  always prefer `createDate`. Verified live: logged-in scraping works (email-code
+  login via Telegram assist, session in `indeed_profile` volume), CF solved via
+  profile clearance, detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder
+  when skipped). Login flow details in INDEED.md "Login" (esp. the `;jsessionid`
+  400 trap and the post-submit OAuth wait).
 - LinkedIn: logged-in scraping verified (pages of 25, detail panels,
   dedupe against `seen_ids`); `posted_at` matches host local time.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
@@ -151,11 +167,15 @@ Notable: `LINKEDIN_ENABLED` (currently `True` in `.env`), `INDEED_ENABLED`
   `/data/markup`.
 
 ## Offline testing (do this after ANY parsing/selector change)
+Run `.venv/bin/python scripts/verify_offline.py` for the complete offline checks.
+It uses temporary SQLite files, dummy credentials and mocked HTTP; intentional
+broken-markup cases must alert for all three boards without sending real messages.
+
 ```python
-# fixtures: markup/wuzzuf/wazzuf_guide.txt (curl capture containing the SSR blob),
+# fixtures: markup/wuzzuf/wazzuf_guide.txt (public card DOM and SSR fields),
 #           markup/linkedin/manual_login_{en,ar}.html (sanitized login pages)
 raw = open("markup/wuzzuf/wazzuf_guide.txt", encoding="utf-8").read()
-html = raw[raw.find("<!DOCTYPE"):]          # guide starts with curl noise
+html = raw[raw.find("<!DOCTYPE"):]
 from boards.wuzzuf.scraper import _extract_state, _extract_jobs
 from boards.base import load_board_selectors
 entities = _extract_state(html)              # expect 15
@@ -194,3 +214,53 @@ Set dummy env before importing config in test scripts:
 - Docstrings/comments are used throughout — keep that style when editing.
 - DB timestamps are local time strings `YYYY-MM-DD HH:MM(:SS)`; snapshot
   filenames are UTC. Don't mix formats.
+
+## Enrichment and parser alerts (2026-10-03)
+- Save raw data first with `boards.base.persist_jobs`; queued AI work is a row in
+  `job_enrichments` in the same SQLite database. Never overwrite raw descriptions
+  with AI output. Schema migration does not enqueue historical jobs.
+- `ENRICHMENT_ENABLED=false` preserves single-channel delivery in `main.py` after
+  Chrome closes. The worker owns classified delivery; both `ENRICHMENT_ENABLED` and the separate
+  `CLASSIFIED_DELIVERY_ENABLED` flag must be true before posting classified jobs.
+- Model/key: `CLASSIFIER_MODEL=openai/gpt-6-luna`; `OPENROUTER_API_KEY` accepts
+  the existing `OPENROUTER_API` alias. Prompt/schema/taxonomy live in
+  `markup/enrichment/`; channel IDs live only in `TELEGRAM_CHANNELS_JSON` in `.env`.
+  API endpoints are configured by `OPENROUTER_BASE_URL` and `TELEGRAM_API_BASE_URL`.
+  The job_family_v2 specification in EXPAND supersedes all old
+  department/industry/Gulf/DeepSeek routing plans. No keyword-only classifier bypasses extraction.
+- Cache keys include full relevant source content, model and prompt/schema
+  version. Input caching is provider-managed and measured via usage details.
+  Never cache fallback as successful classification. Reserve spend before calls.
+- All spiders use `ScrapeHealth`: record checks during parsing, report once after
+  the spider finishes. Errors alert TELEGRAM_FAILURE_CHAT_ID (TELEGRAM_TEST_ID
+  alias). Repeated unresolved issues are suppressed across restarts; failed
+  alert delivery is retried next observation. A later good card cannot erase an
+  earlier failure in the same run. An unobserved check is not a recovery.
+- Boards pass their `ScrapeHealth` instance into `scrape` and finish the run with
+  `health.status`/`health.error`. Failed parser checks mean `degraded`, not `ok`,
+  while valid partial jobs are still saved. LinkedIn's captured loading shell
+  (`search.loading_shell` selector) is a loading failure, not proof of redesign.
+- LinkedIn has bounded search/detail recovery and pre-navigation diagnostics.
+  Keep `page_setup` async/awaitable. Do not retry login/checkpoint or HTTP
+  401/403/429 responses. Require the requested job's title link before parsing a
+  detail panel; otherwise the previous card's content can be assigned a new ID.
+- User direction 2026-10-04: after staging tests, clean/push and enable production
+  classification AND channel delivery. There are 25 named families plus `other`.
+  Route only by job_family; employer_sector is analytics-only. All 26 channel
+  IDs and bot posting permissions passed the read-only audit on 2026-10-04.
+  Never enable delivery based only on bot permissions.
+- `.env.example` contains blank credentials/channel values and safe defaults.
+  Never add deployment IDs, credentials, exports or authenticated captures to Git.
+  Parser fixtures contain only public job fields; runtime snapshots remain ignored.
+- The user removed legacy `dataanalysis/` to start fresh. Current analytics use
+  `core/analytics.py` and `scripts/report_enrichment.py`; do not recreate old
+  department-based extraction, backfills or charts. Raw production jobs remain.
+- Preserve explicit title seniority: validation must not recalculate it from
+  experience. Require valid family/specialization pairs and Low/Other review flags.
+  Old industry rows become obsolete, not reinterpreted or automatically requeued.
+- Check required structures and source text, not optional salary/recruiter fields.
+  All-seen pages are healthy. Indeed detail-cap snippets are deliberate partial
+  data, not proof of a structural failure. Preserve cards after failed requests.
+- Snapshots strip script tags, but hidden `<code>` elements can retain embedded
+  account JSON. Keep them local; never paste account state into Telegram or
+  commit authenticated page captures. Use minimal fixtures for offline checks.
