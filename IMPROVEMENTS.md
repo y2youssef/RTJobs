@@ -331,3 +331,8 @@ LinkedIn/Indeed sample parsing, and migration on a copy of the 37,748-job DB.
 - Removed legacy `dataanalysis/` at the user's request and wrote a fresh
   [analytics guide](docs/ANALYTICS.md) for the new SQLite contract. Raw production
   jobs are preserved; historical jobs are not automatically reclassified.
+- Production activation verified at 16:42–16:46 Cairo: migration preserved 38,794
+  jobs; all three boards completed healthy; all 13 new jobs were classified and
+  delivered to their expected destinations across 11 families. First-batch cost
+  $0.00602995; 81,480 provider-cached input tokens. Worker and scheduler remain
+  running. See [deployment record](docs/DEPLOYMENT.md).

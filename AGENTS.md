@@ -141,6 +141,10 @@ persists in the `indeed_profile` volume, re-login only on expiry with a
 - Docker hosting verified end-to-end on this machine: ofelia fires every
   6 min → one-shot `rtjobs` container → LinkedIn (logged-in session in the
   `chrome_profile` volume) + Wuzzuf scrape → SQLite + Telegram.
+- Job-family classification and delivery enabled 2026-10-04 at 16:42 Cairo.
+  First production batch: 13/13 new jobs classified and delivered to 11 families;
+  all three boards completed `ok`. Worker service is `enrichment`, separate from
+  Chrome; both enable flags are true in private `.env`. See docs/DEPLOYMENT.md.
 - CDP live attach verified: while a run is in progress,
   `curl http://localhost:9222/json/version` on the host returns Chrome's
   DevTools info (open localhost:9222 / chrome://inspect to drive it —

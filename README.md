@@ -230,6 +230,8 @@ Generic skills fields were removed. Title seniority takes precedence over years.
 Both `ENRICHMENT_ENABLED` and `CLASSIFIED_DELIVERY_ENABLED` default to false.
 After staging tests, the user authorized production classification and channel
 delivery. Activation is explicit in the deployment environment, not public defaults.
+The [production deployment record](docs/DEPLOYMENT.md) documents the verified
+rollout, active settings and rollback image.
 
 Scraping always saves the original parsed job to `jobs` first. When enabled,
 the same transaction creates a `job_enrichments` row in the **same SQLite DB**.
