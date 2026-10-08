@@ -191,7 +191,7 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     url = f"http://127.0.0.1:{port}/json/version"
     launched = time.monotonic()
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
+        if _leader_exited(proc):
             tail = _stderr_tail(proc)
             stop_chrome(proc)
             raise RuntimeError(f"Chrome exited early with code {proc.returncode}: {tail}")
@@ -222,23 +222,42 @@ def _stderr_tail(proc, limit: int = 300) -> str:
     return (" | ".join(lines[-2:]) or "no stderr output")[-limit:]
 
 
+def _leader_exited(proc: subprocess.Popen) -> bool:
+    """True once Chrome's main process exited, WITHOUT reaping it.
+
+    The unreaped zombie keeps its PID, which is also our process-group id,
+    reserved, so group signals sent before proc.wait() can never reach an
+    unrelated group that reused the number. (A signal-0 probe could not tell
+    the two apart.)
+    """
+    if proc.returncode is not None:
+        return True
+    try:
+        return os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return True
+
+
 def stop_chrome(proc: subprocess.Popen | None) -> None:
-    """Terminate Chrome's whole process group; force-kill if it doesn't exit."""
-    if proc is None:
+    """Terminate Chrome's whole process group; force-kill stragglers. Idempotent."""
+    if proc is None or getattr(proc, "_rtjobs_stopped", False):
         return
-    if proc.poll() is None:
-        _signal_group(proc, signal.SIGTERM)
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
+    proc._rtjobs_stopped = True
+    try:
+        if proc.returncode is None:  # unreaped, so the group id is still ours
+            if not _leader_exited(proc):
+                _signal_group(proc, signal.SIGTERM)
+                deadline = time.monotonic() + 10
+                while not _leader_exited(proc) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+            # Renderer/GPU/zygote children can outlive the main process.
             _signal_group(proc, signal.SIGKILL)
             proc.wait(timeout=5)
-    # Children can outlive the parent briefly; never leave them behind.
-    _signal_group(proc, signal.SIGKILL)
-    _LIVE.discard(proc)
-    stream = getattr(proc, "_rtjobs_stderr", None)
-    if stream is not None:
-        stream.close()
+    finally:
+        _LIVE.discard(proc)
+        stream = getattr(proc, "_rtjobs_stderr", None)
+        if stream is not None:
+            stream.close()
 
 
 def kill_live_chrome() -> None:
@@ -246,9 +265,11 @@ def kill_live_chrome() -> None:
 
     Chrome runs in its own session/process group, so a terminal's Ctrl-C no
     longer reaches it; without this it would outlive a forced exit and keep
-    the CDP port busy."""
+    the CDP port busy. Only unreaped leaders are signalled (see _leader_exited).
+    """
     for proc in list(_LIVE):
-        _signal_group(proc, signal.SIGKILL)
+        if proc.returncode is None:
+            _signal_group(proc, signal.SIGKILL)
         _LIVE.discard(proc)
 
 

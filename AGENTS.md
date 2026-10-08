@@ -57,7 +57,8 @@ description, link, extra(dict), scraped_at`.
    `.venv/lib/python3.14/site-packages/scrapling/engines/_browsers/_stealth.py`.
 2. **Chrome lifecycle + CDP attach** (`core/browser.chrome_args`): the CDP
    WebSocket accepts only DevTools origins (devtools://devtools, the port's own
-   frontend, chrome-devtools-frontend.appspot.com) — never `*`. `--no-sandbox`
+   frontend, chrome-devtools-frontend.appspot.com) — never `*`, and no LAN-IP
+   origins (attach via localhost/SSH tunnel). `--no-sandbox`
    only in containers (`CHROME_NO_SANDBOX=auto`: the sandbox cannot start
    there). Chrome runs in its own process group; stop_chrome kills the group.
    Scrapling's stealth context options are deliberately NOT applied (we
@@ -268,6 +269,19 @@ Set dummy env before importing config in test scripts:
   Existing local rows were converted once (`PRAGMA user_version` 1).
   `scraped_at` now always has seconds (`HH:MM:SS`); older rows had `HH:MM`
   and gained `:00` in the migration — parse with `datetime.fromisoformat`.
+
+## Backlog (open items; history in docs/archive/IMPROVEMENTS-2026-08-to-10.md)
+- pytest suite + CI: promote scripts/verify_*.py into `tests/` (offline fixtures).
+- Indeed search page: replace the fixed `wait_for_timeout(2500)` with a poll for
+  the mosaic jobcards blob (~2.5s off every cycle; pacing unchanged).
+- Boards in parallel (cycle ~= LinkedIn alone, ~30s instead of ~50s): keep ONE
+  cycle per main.py run (whole-cycle classification) and launch the boards
+  concurrently on separate CDP ports/profiles — not separate schedules.
+- Reproducible image: pin the Chrome .deb version (Dockerfile downloads
+  `google-chrome-stable_current`) and lock transitive Python dependencies.
+- Retention for latency_events / runs / scrape_batches / enrichment_requests.
+- Host Chrome (154) vs container Chrome (151): the hosted DevTools frontend can
+  mismatch; use the URL printed by scripts/inspect_chrome.py.
 
 ## Enrichment and parser alerts (2026-10-03)
 - Save raw data first with `boards.base.persist_jobs`; queued AI work is a row in

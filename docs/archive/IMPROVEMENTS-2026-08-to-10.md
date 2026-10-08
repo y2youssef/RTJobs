@@ -1,3 +1,7 @@
+> **Archived 2026-10-08.** Historical audit log (Aug–Oct 2026); line references
+> and several statements are outdated (pagination, xvfb-run, Indeed detail cap).
+> Still-open items live in AGENTS.md → "Backlog".
+
 # Improvements & Refactoring Plan
 
 Status: **done 2026-09-04 — all S/XS items shipped (A1-A4, B1-B4, C2-C5); only C1 (pytest, M) remains as future work.

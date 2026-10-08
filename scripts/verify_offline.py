@@ -425,7 +425,12 @@ def verify(directory):
     with patch.object(board_base, "chrome_session", side_effect=AssertionError("Chrome must not start")):
         assert Probe(RuntimeError("unused"), skip="blocked").run() == 0
         assert last_run()[0] == "blocked"
-    print("PASS board run() template: error recorded once, interrupt status kept, skip before Chrome")
+    class Forgetful(Probe):
+        def scrape(self, cdp, record): return 0
+    with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")):
+        assert Forgetful(None).run() == 0
+    assert last_run()[0] == "error" and "without recording" in last_run()[1]
+    print("PASS board run() template: error recorded once, interrupt status kept, skip before Chrome, no leaked running rows")
 
     # A completed browser/spider with failed data checks must record degraded,
     # while retaining valid partial results. Healthy empty/new runs remain ok.
@@ -509,6 +514,14 @@ def verify_browser_launch():
         raise AssertionError("Chrome child processes survived stop_chrome")
     except ProcessLookupError:
         pass
+    # Idempotent, and a reaped leader is never group-signalled (its id may be reused).
+    browser.stop_chrome(group)
+    reaped = subprocess.Popen(["true"], start_new_session=True)
+    reaped.wait()
+    with patch.object(browser.os, "killpg", side_effect=AssertionError("signalled a reaped group")):
+        browser.stop_chrome(reaped)
+        browser._LIVE.add(reaped)
+        browser.kill_live_chrome()
     # A forced exit kills every Chrome group still registered as live.
     group = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60"], start_new_session=True)
     browser._LIVE.add(group)

@@ -114,6 +114,11 @@ class JobBoard(ABC):
             # Chrome launch failures and interrupts outside scrape().
             record.finish("interrupted" if isinstance(exc, SystemExit) else "error", error=str(exc))
             raise
+        finally:
+            # Structural guarantee: a scrape() path that forgets record.finish()
+            # can never leave the row "running" (all current paths finish it).
+            if not record.done:
+                record.finish("error", error=f"{self.name}: scrape() returned without recording a status")
 
     def before_browser(self) -> str | None:
         """Checks that must run before Chrome starts (never inside a live
