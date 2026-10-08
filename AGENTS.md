@@ -35,7 +35,7 @@ core/markup.py           sanitized HTML snapshots -> markup/<site>/snapshots/<ki
 core/login_state.py      LinkedIn retry counter + escalating cooldown (5m/15m/30m)
 core/browser.py          patch_no_load_wait — see Gotchas #1
 core/human.py            random human-like delays
-boards/base.py           JobBoard ABC + load_board_selectors()
+boards/base.py           JobBoard run() template (RunRecord, before_browser, scrape) + persist_jobs + load_board_selectors()
 boards/linkedin/         login.py (state machine) + scraper.py (Spider)
 boards/wuzzuf/           scraper.py (Spider, solve_cloudflare=True)
 boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDEED.md
@@ -89,7 +89,9 @@ description, link, extra(dict), scraped_at`.
    known card" rule — promoted/reposted cards would hide newer ones. Wuzzuf
    pages are `?q=&start=0` (15 jobs); job id = first hyphen-separated
    component of the slug: `/jobs/p/<id>-<slug>`. Indeed fetches the detail page
-   of EVERY new card (no cap).
+   of EVERY new card (no cap). Accepted trade-off (user, Oct 2026): after an
+   outage longer than ~one page of postings, older jobs are lost for good —
+   do not add catch-up pagination.
 5. **LinkedIn login**: `page_action` runs right after DOMContentLoaded, BEFORE
    an active session's `/login -> /feed` redirect lands (scrapling's `wait`
    only starts after page_action) — `_wait_for_landing` must run before judging
@@ -250,6 +252,10 @@ Set dummy env before importing config in test scripts:
   suspicious page (login failure, checkpoint, empty results, redirects).
 - Failures -> `telegram.notify_failure(subject, detail, snapshot, hint)`;
   never crash silently.
+- Boards: subclass `JobBoard`, set `name/title/enabled/profile_dir`, implement
+  `scrape(cdp, record)` (and `before_browser()` for checks that must run
+  before Chrome starts). `run()` owns the run row, Chrome and error handling;
+  finish via `record.finish(...)` / `self.finish_scrape(record, health, items)`.
 - Spiders: scrapling `Spider` subclass, `configure_sessions` + `manager.add`
   + `sid=` routing, per-request `page_action` for in-page work, `parse`
   yields job dicts and follow-up `Request`s.

@@ -5,7 +5,8 @@ import json
 import os
 from abc import ABC, abstractmethod
 
-from config import MARKUP_DIR
+from config import CHROME_DEBUG_PORT, HEADLESS, KILL_CHROME_ON_START, MARKUP_DIR
+from core.browser import chrome_session, install_cdp_default_context_patch
 
 logger = logging.getLogger(__name__)
 
@@ -49,23 +50,82 @@ def load_board_selectors(site: str) -> dict:
         return json.load(f)
 
 
+class RunRecord:
+    """One `runs` row, finished exactly once; later finish() calls are ignored,
+    so an outer handler can never overwrite the precise inner status."""
+
+    def __init__(self, source: str):
+        from core import db
+
+        self._db = db
+        self.id = db.start_run(source)
+        self.done = False
+
+    def finish(self, status: str, **kw):
+        if not self.done:
+            self.done = True
+            self._db.finish_run(self.id, status, **kw)
+
+
 class JobBoard(ABC):
-    """A single job board site."""
+    """A single job board site.
+
+    run() is the shared template: a run row, pre-browser checks, our own
+    CDP Chrome on the board's persistent profile, then the board's scrape().
+    A scrape error is recorded and alerted and the cycle continues with 0
+    jobs; Chrome startup failures and interrupts propagate to main.py.
+    """
 
     name: str = "base"
-    requires_login: bool = False
+    title: str = "Base"  # alert wording: "<title> board failed"
     enabled: bool = True
+    profile_dir: str = ""
 
     def __init__(self):
         self.selectors = load_board_selectors(self.name)
 
-    @property
-    def markup_site(self) -> str:
-        return self.name
-
-    @abstractmethod
     def run(self) -> int:
         """Scrape the board and persist jobs; delivery runs after Chrome closes.
 
         Returns the number of newly scraped jobs (0 is a valid result).
         """
+        from core import telegram
+
+        record = RunRecord(self.name)
+        try:
+            skip = self.before_browser()
+            if skip:
+                record.finish(skip)
+                return 0
+            install_cdp_default_context_patch()
+            with chrome_session(self.profile_dir, CHROME_DEBUG_PORT, headless=HEADLESS,
+                                clean_locks=KILL_CHROME_ON_START) as cdp:
+                try:
+                    return self.scrape(cdp, record)
+                except SystemExit:
+                    record.finish("interrupted", error="terminated by signal")
+                    raise
+                except Exception as exc:
+                    record.finish("error", error=str(exc))
+                    telegram.notify_failure(f"{self.title} board failed", str(exc))
+                    logger.error(f"[{self.name}] Run failed: {exc}")
+                    return 0
+        except BaseException as exc:
+            # Chrome launch failures and interrupts outside scrape().
+            record.finish("interrupted" if isinstance(exc, SystemExit) else "error", error=str(exc))
+            raise
+
+    def before_browser(self) -> str | None:
+        """Checks that must run before Chrome starts (never inside a live
+        Chrome); return a run status to skip this run."""
+        return None
+
+    @abstractmethod
+    def scrape(self, cdp: str, record: RunRecord) -> int:
+        """Board-specific work against the running Chrome; finish `record`."""
+
+    def finish_scrape(self, record: RunRecord, health, items: list[dict]) -> int:
+        """Persist the scraped jobs and close the run with the health status."""
+        new_count = persist_jobs(self.name, items)
+        record.finish(health.status, jobs_found=new_count, error=health.error)
+        return new_count

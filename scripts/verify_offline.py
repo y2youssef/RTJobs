@@ -383,12 +383,13 @@ def verify(directory):
     import boards.linkedin as li_board
     import boards.wuzzuf as wu_board
     import boards.indeed as in_board
+    import boards.base as board_base
     with ExitStack() as stack:
         stack.enter_context(patch.object(li_board.login_state, "is_blocked", return_value=False))
         stack.enter_context(patch.object(li_board.login_state, "should_wipe_profile", return_value=False))
         stack.enter_context(patch.object(li_board.login, "kill_zombie_chrome"))
         for module, cls in ((li_board, li_board.LinkedInBoard), (wu_board, wu_board.WuzzufBoard), (in_board, in_board.IndeedBoard)):
-            with patch.object(module, "chrome_session", side_effect=RuntimeError("startup failed")):
+            with patch.object(board_base, "chrome_session", side_effect=RuntimeError("startup failed")):
                 try:
                     cls().run()
                 except RuntimeError:
@@ -399,6 +400,31 @@ def verify(directory):
                 row = conn.execute("SELECT status,finished_at FROM runs WHERE source=? ORDER BY id DESC LIMIT 1", (cls.name,)).fetchone()
                 assert row[0] == "error" and row[1]
     print("PASS Chrome startup failure audit for all boards")
+
+    # Shared run() template: errors are recorded + alerted (cycle continues),
+    # interrupts keep their precise status, skips never start Chrome.
+    from core import telegram as tg
+    class Probe(board_base.JobBoard):
+        name, title = "wuzzuf", "Probe"
+        def __init__(self, outcome, skip=None): self.outcome, self.skip = outcome, skip
+        def before_browser(self): return self.skip
+        def scrape(self, cdp, record): raise self.outcome
+    def last_run():
+        with db.get_db() as conn:
+            return tuple(conn.execute("SELECT status,error FROM runs WHERE source='wuzzuf' ORDER BY id DESC LIMIT 1").fetchone())
+    with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")), \
+            patch.object(tg, "notify_failure", return_value=True) as alert:
+        assert Probe(RuntimeError("boom")).run() == 0
+        assert last_run() == ("error", "boom") and alert.call_args.args[0] == "Probe board failed"
+        try:
+            Probe(SystemExit(0)).run()
+        except SystemExit:
+            pass
+        assert last_run() == ("interrupted", "terminated by signal")
+    with patch.object(board_base, "chrome_session", side_effect=AssertionError("Chrome must not start")):
+        assert Probe(RuntimeError("unused"), skip="blocked").run() == 0
+        assert last_run()[0] == "blocked"
+    print("PASS board run() template: error recorded once, interrupt status kept, skip before Chrome")
 
     # A completed browser/spider with failed data checks must record degraded,
     # while retaining valid partial results. Healthy empty/new runs remain ok.
@@ -421,7 +447,7 @@ def verify(directory):
                         return items
                     return {"items": items, "login_redirect": False, "logged_out": False, "blocked": False}
                 with ExitStack() as case:
-                    case.enter_context(patch.object(module, "chrome_session", side_effect=lambda *a, **kw: nullcontext("unused")))
+                    case.enter_context(patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("unused")))
                     case.enter_context(patch.object(module.scraper, "scrape", side_effect=fake_scrape))
                     if cls.name != "wuzzuf":
                         case.enter_context(patch.object(module, "StealthySession", LoggedInSession))
@@ -568,6 +594,7 @@ def verify_linkedin_login():
     """Rejected credentials stop logins; checkpoints never wipe; one wipe per streak."""
     import boards.linkedin as li_board
     from boards.linkedin import login
+    import boards.base as board_base
     from boards.base import load_board_selectors
     from core import login_state, markup
     sel = load_board_selectors("linkedin")
@@ -622,7 +649,7 @@ def verify_linkedin_login():
         assert login._classify(rejected, sel) is False
         assert alerts.call_count == 1 and "rejected" in alerts.call_args.args[0]
         assert "Wrong email or password" in alerts.call_args.args[1]
-        with patch.object(li_board, "chrome_session", side_effect=AssertionError("Chrome must not start")):
+        with patch.object(board_base, "chrome_session", side_effect=AssertionError("Chrome must not start")):
             for _ in range(3):
                 assert li_board.LinkedInBoard().run() == 0
         with login_state.db.get_db() as conn:
