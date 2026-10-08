@@ -339,6 +339,11 @@ Set dummy env before importing config in test scripts:
   monitor healthy. Image `rtjobs-scraper:production-whole-batch-20261004`; prior
   `production-family-v2` is retained. See docs/DEPLOYMENT.md for exact timings.
 
+- 2026-10-08 18:33 Cairo: deployed `d6fae84` (UTC clock + migration, LinkedIn
+  login safety, classifier limits, first-page-only 3-min schedule, entrypoint
+  SIGTERM fix, CDP hardening). Image `production-utc-speed-20261008`; DB backup
+  `/data/backups/rtjobs-pre-utc-20261008-1832.db`. See docs/DEPLOYMENT.md.
+
 ## Immediate queue notifications
 - After committing a complete scrape cycle, notify `enrichment`; after committing
   validated results, notify `delivery` via `core/wakeup.py`. Notifications must

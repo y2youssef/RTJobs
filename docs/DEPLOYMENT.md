@@ -139,7 +139,20 @@ Additional real IPC checks verified cross-process and cross-container wakeups,
 commit visibility, immediate delivery, missed notifications, restart, backoff,
 full/duplicate notifications, shutdown and rollback without a premature wakeup.
 
-## Pending: UTC clock, login safety and cycle limits — not yet deployed
+## UTC clock, login safety, cycle limits and speed — deployed 2026-10-08
+
+Deployed at **18:33 Cairo** (application `d6fae84`), image
+`rtjobs-scraper:production-utc-speed-20261008` (`4d092309d4b6`); the previous
+`production-latency-budget-20261008` image remains for rollback, and a
+pre-migration SQLite backup is at `/data/backups/rtjobs-pre-utc-20261008-1832.db`
+(integrity ok, 42,374 jobs). Verified live: migration to `user_version` 1 (18:30
+Cairo rows read 15:30 UTC); ofelia registered `0 */3 * * * *`; the first cycles
+took 50s and 37s with every board `ok`; LinkedIn login_check fell from ~8s to
+3.5s and Indeed's from 8.2s to 6.1s; both classifier requests succeeded first
+time; scraped -> delivered was 25-50s (median before: ~3 min); the monitor
+reported 0 of 16 checks failing. `up --build` hit a parallel-build tag race
+(four services building one image); only the scraper builds it now.
+
 
 Changes: stored timestamps move to UTC (`core/clock.py`; only `posted_at`
 stays local), LinkedIn rejected-credential lock / late-redirect fix, free

@@ -67,8 +67,10 @@ services:
     # Browser-free pipeline services share SQLite, each with its own process lock.
     # Start with: docker compose --profile enrichment up -d --build
     profiles: ["enrichment"]
-    build: .
+    # Built once by the scraper service: four services building the same tag
+    # in parallel raced ("image ... already exists") and aborted `up --build`.
     image: rtjobs-scraper
+    pull_policy: never
     init: true
     user: "1000:1000"
     env_file: .env
@@ -88,8 +90,10 @@ services:
     # Browser-free pipeline services share SQLite, each with its own process lock.
     # Start with: docker compose --profile enrichment up -d --build
     profiles: ["enrichment"]
-    build: .
+    # Built once by the scraper service: four services building the same tag
+    # in parallel raced ("image ... already exists") and aborted `up --build`.
     image: rtjobs-scraper
+    pull_policy: never
     init: true
     user: "1000:1000"
     env_file: .env
@@ -109,8 +113,10 @@ services:
     # Browser-free pipeline services share SQLite, each with its own process lock.
     # Start with: docker compose --profile enrichment up -d --build
     profiles: ["enrichment"]
-    build: .
+    # Built once by the scraper service: four services building the same tag
+    # in parallel raced ("image ... already exists") and aborted `up --build`.
     image: rtjobs-scraper
+    pull_policy: never
     init: true
     user: "1000:1000"
     env_file: .env
