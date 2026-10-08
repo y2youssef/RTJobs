@@ -21,9 +21,22 @@ _LAST_SEND: dict[str, float] = {}
 _RETRY_AFTER: dict[str, float] = {}
 
 
+_MD_SPECIAL = r"_*\[\]()~`>#+\-=|{}.!\\"
+
+
 def escape_md(text: str) -> str:
     """Escape special characters for Telegram MarkdownV2."""
-    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", text or "")
+    return re.sub(f"([{_MD_SPECIAL}])", r"\\\1", text or "")
+
+
+def _unescape_md(text: str) -> str:
+    """Best-effort plain rendering of a MarkdownV2 message (fallback only)."""
+    return re.sub(f"\\\\([{_MD_SPECIAL}])", r"\1", text or "")
+
+
+def _clip(text: str | None, limit: int) -> str:
+    text = text or ""
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 def _send(
@@ -31,7 +44,10 @@ def _send(
     text: str,
     parse_mode: str = "MarkdownV2",
     max_attempts: int = 3,
+    plain: str | None = None,
 ) -> bool:
+    """Send one message; on a MarkdownV2 parse error resend `plain` (the
+    readable unformatted version) instead of the escaped markup."""
     for attempt in range(max_attempts):
         try:
             payload = {
@@ -73,7 +89,8 @@ def _send(
         if resp.status_code == 400 and parse_mode:
             # MarkdownV2 escaping issue — resend as plain text
             logger.warning("[telegram] Parse error, resending without MarkdownV2")
-            return _send(chat_id, text, parse_mode=None, max_attempts=1)
+            return _send(chat_id, plain if plain is not None else _unescape_md(text),
+                         parse_mode=None, max_attempts=1)
 
         logger.error(f"[telegram] Failed: {resp.text}")
         return False
@@ -105,7 +122,9 @@ def notify_jobs(pending: list, *, stop=None, progress=None) -> int:
         counts[chat_id] = counts.get(chat_id, 0) + 1
         cooldown = _RETRY_AFTER.get(chat_id, 0) - time.time()
         if cooldown > 0:
-            db.defer_notification(job["id"], minimum_delay=cooldown)
+            # Waiting out Telegram's rate limit is not a delivery failure:
+            # no attempt counted, no exponential backoff, no retries alert.
+            db.defer_notification(job["id"], minimum_delay=cooldown, count_attempt=False)
             continue
         try:
             extra = json.loads(job["extra"] or "{}")
@@ -114,33 +133,37 @@ def notify_jobs(pending: list, *, stop=None, progress=None) -> int:
         if not isinstance(extra, dict):
             extra = {}
 
-        mgr = ""
-        if extra.get("hiring_manager_name"):
-            mgr = (
-                f"\n👤 *{escape_md(str(extra['hiring_manager_name'])[:150])}*"
-                f" — {escape_md(str(extra.get('hiring_manager_role') or '')[:300])}"
-            )
-
-        text = (
-            f"{'🇪🇬 ' if job.get('country') == 'EG' and ENRICHMENT_ENABLED else ''}🆕 *{escape_md(str(job.get('title') or 'Job posting')[:250])}*\n"
-            f"🏢 {escape_md(str(job.get('company') or '')[:200])}\n"
-            f"🕐 Posted {escape_md(str(job.get('posted_at') or '')[:50])}"
-            f"{mgr}"
-        )
+        flag = "🇪🇬 " if job.get("country") == "EG" and ENRICHMENT_ENABLED else ""
+        title = str(job.get("title") or "Job posting")[:250]
+        company = str(job.get("company") or "")[:200]
+        posted = str(job.get("posted_at") or "")[:50]
+        manager = str(extra.get("hiring_manager_name") or "")[:150]
+        role = str(extra.get("hiring_manager_role") or "")[:300]
+        mgr = f"\n👤 *{escape_md(manager)}* — {escape_md(role)}" if manager else ""
+        text = (f"{flag}🆕 *{escape_md(title)}*\n🏢 {escape_md(company)}\n"
+                f"🕐 Posted {escape_md(posted)}{mgr}")
+        plain = (f"{flag}🆕 {title}\n🏢 {company}\n🕐 Posted {posted}"
+                 + (f"\n👤 {manager} — {role}" if manager else ""))
         link = job.get("link") or ""
         if urlsplit(link).scheme in ("http", "https"):
-            text += "\n\n[View](" + quote(link, safe="/:?&=%#@+;,-._~") + ")"
+            safe_link = quote(link, safe="/:?&=%#@+;,-._~")
+            text += "\n\n[View](" + safe_link + ")"
+            plain += "\n\n" + safe_link
 
         db.set_destination(job["id"], chat_id)
         time.sleep(max(0, _LAST_SEND.get(chat_id, 0) + 1.05 - time.monotonic()))
-        ok = _send(chat_id, text)
+        ok = _send(chat_id, text, plain=plain)
         _LAST_SEND[chat_id] = time.monotonic()
         if ok:
             db.mark_notified(job["id"])
             sent += 1
             time.sleep(0.05)
         else:
-            db.defer_notification(job["id"], minimum_delay=max(0, _RETRY_AFTER.get(chat_id, 0) - time.time()))
+            rate_limited = _RETRY_AFTER.get(chat_id, 0) - time.time()
+            if rate_limited > 0:
+                db.defer_notification(job["id"], minimum_delay=rate_limited, count_attempt=False)
+            else:
+                db.defer_notification(job["id"])
 
     return sent
 
@@ -162,12 +185,20 @@ def notify_failure(subject: str, detail: str = "", snapshot: str | None = None,
         logger.info(f"[alert] {subject}: {detail}")
         return False
 
+    # Telegram rejects messages over 4096 characters, and exception text
+    # (e.g. Playwright call logs) can be far longer: clip each part so the
+    # alert always fits instead of failing both send attempts.
+    subject, detail = _clip(subject, 200), _clip(detail, 3000)
+    snapshot, hint = _clip(snapshot, 200), _clip(hint, 400)
     text = f"🚨 *{escape_md(subject)}*\n\n{escape_md(detail)}"
+    plain = f"🚨 {subject}\n\n{detail}"
     if snapshot:
         text += f"\n\n📎 Snapshot: `{escape_md(snapshot)}`"
+        plain += f"\n\n📎 Snapshot: {snapshot}"
     if hint:
         text += f"\n\n🔧 {escape_md(hint)}"
-    return _send(TELEGRAM_FAILURE_CHAT_ID, text)
+        plain += f"\n\n🔧 {hint}"
+    return _send(TELEGRAM_FAILURE_CHAT_ID, text, plain=plain)
 
 
 # ---------------------------------------------------------------------------

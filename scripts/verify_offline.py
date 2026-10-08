@@ -217,6 +217,21 @@ def verify(directory):
     with patch.object(telegram._SESSION, "post", side_effect=post):
         assert telegram._send("-1001", "bad markdown")
     assert payloads[0]["parse_mode"] == "MarkdownV2" and "parse_mode" not in payloads[1]
+    # The plain retry is readable text, not leftover MarkdownV2 escapes.
+    payloads.clear()
+    responses = iter([SimpleNamespace(ok=False, status_code=400, text="parse error"), SimpleNamespace(ok=True)])
+    with patch.object(telegram._SESSION, "post", side_effect=post):
+        assert telegram._send("-1001", "*A\\.B* \\(x\\)", plain="A.B (x)")
+    assert payloads[1]["text"] == "A.B (x)"
+    assert telegram._unescape_md("Senior \\(C\\+\\+\\) Dev\\.") == "Senior (C++) Dev."
+    # A huge exception text still fits Telegram's 4096-character limit.
+    sent = []
+    with patch.object(telegram, "TELEGRAM_FAILURE_CHAT_ID", "-1002"), \
+            patch.object(telegram, "_send", side_effect=lambda chat, text, plain=None: sent.append((text, plain)) or True):
+        telegram.notify_failure("Board crashed", "Call log:\n" + "x.(y)" * 5000, "snap/x.html", "hint")
+    # Telegram counts the limit after entity parsing (escapes removed).
+    assert len(telegram._unescape_md(sent[0][0])) <= 4096 and len(sent[0][1]) <= 4096
+    assert sent[0][1].startswith("🚨 Board crashed") and sent[0][1].endswith("🔧 hint")
     delivered = [r for r in db.get_unnotified(limit=100) if r["id"] == row["id"]]
     with patch.object(telegram, "_send", return_value=True) as send, patch.object(telegram.time, "sleep"):
         assert telegram.notify_jobs(delivered) == 1
@@ -225,7 +240,13 @@ def verify(directory):
     with db.get_db() as conn:
         assert conn.execute("SELECT notified FROM jobs WHERE id=?", (row["id"],)).fetchone()[0] == 1
         assert conn.execute("SELECT description FROM jobs WHERE id=?", (row["id"],)).fetchone()[0] == row["description"]
+    # A rate-limit wait is not a failed attempt (no backoff, no retries alert).
+    db.defer_notification(second_row["id"], minimum_delay=30, count_attempt=False)
+    with db.get_db() as conn:
+        assert conn.execute("SELECT notify_attempts FROM jobs WHERE id=?", (second_row["id"],)).fetchone()[0] == 0
     db.defer_notification(second_row["id"], minimum_delay=300)
+    with db.get_db() as conn:
+        assert conn.execute("SELECT notify_attempts FROM jobs WHERE id=?", (second_row["id"],)).fetchone()[0] == 1
     assert all(r["id"] != second_row["id"] for r in db.get_unnotified(limit=100))
     print("PASS delivery acknowledgement, safe links, plaintext retry and persistent backoff")
 

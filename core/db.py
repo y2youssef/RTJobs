@@ -359,14 +359,16 @@ def set_destination(job_id: int, chat_id: str):
                      (str(chat_id), job_id))
 
 
-def defer_notification(job_id: int, minimum_delay: float = 0):
+def defer_notification(job_id: int, minimum_delay: float = 0, count_attempt: bool = True):
+    """Retry later. Failures back off exponentially and count toward the
+    delivery-retries alert; a rate-limit wait (count_attempt=False) does neither."""
     with get_db() as conn:
         row = conn.execute("SELECT notify_attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
-            seconds = max(minimum_delay, min(3600, 60 * 2 ** min(row[0], 6)))
-            retry_at = clock.after(seconds)
-            conn.execute("UPDATE jobs SET notify_attempts = notify_attempts + 1, next_notify_at = ? WHERE id = ?",
-                         (retry_at, job_id))
+            seconds = (max(minimum_delay, min(3600, 60 * 2 ** min(row[0], 6))) if count_attempt
+                       else max(1, minimum_delay))
+            conn.execute("UPDATE jobs SET notify_attempts = notify_attempts + ?, next_notify_at = ? WHERE id = ?",
+                         (int(count_attempt), clock.after(seconds), job_id))
 
 
 def pending_enrichments(limit: int) -> list[sqlite3.Row]:
