@@ -3,9 +3,11 @@ services:
     build: .
     image: rtjobs-scraper
     container_name: rtjobs
-    # tini as PID 1: xvfb-run's SIGUSR1 readiness handshake hangs forever
-    # when the shell itself is PID 1 (kernel signal semantics for PID 1).
+    # tini as PID 1 reaps orphans and forwards `docker stop`'s SIGTERM to the
+    # entrypoint's exec'd python (see docker/entrypoint.sh).
     init: true
+    # Graceful stop: Chrome gets up to 15s, then runs/cycle are closed.
+    stop_grace_period: 30s
     # Host networking so Chrome's CDP port (bound to loopback inside the
     # container) is reachable as localhost:9222 on the host — bridge
     # networking can't forward to a container-loopback listener.
@@ -35,7 +37,7 @@ services:
       - scraper_data:/data
       - ./markup:/data/markup
     # --scheduled: a cycle that overruns a tick starts the next one at once.
-    command: ["xvfb-run", "-a", "python", "main.py", "--scheduled"]
+    command: ["/app/docker/entrypoint.sh", "python", "main.py", "--scheduled"]
     restart: "no"
 
   scheduler:

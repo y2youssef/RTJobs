@@ -38,6 +38,13 @@ SCRAPE_INTERVAL_MINUTES = int(os.environ.get("SCRAPE_INTERVAL_MINUTES", "3"))
 if SCRAPE_INTERVAL_MINUTES < 1 or 60 % SCRAPE_INTERVAL_MINUTES:
     raise ValueError("SCRAPE_INTERVAL_MINUTES must divide 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)")
 
+# Chrome's sandbox cannot start in the container (no user namespaces for the
+# unprivileged user: "Failed to move to new namespace"), so --no-sandbox is
+# applied there only. "auto" = detect Docker; set true/false to override.
+_no_sandbox = os.environ.get("CHROME_NO_SANDBOX", "auto").lower()
+CHROME_NO_SANDBOX = os.path.exists("/.dockerenv") if _no_sandbox == "auto" else _no_sandbox == "true"
+del _no_sandbox
+
 # Kill stray chrome processes before starting (container-only safety net)
 KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() == "true"
 

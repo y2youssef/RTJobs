@@ -55,7 +55,15 @@ description, link, extra(dict), scraped_at`.
    return a coroutine + install `async def` wrappers. Sync sessions get sync
    wrappers and `None`. Verified in
    `.venv/lib/python3.14/site-packages/scrapling/engines/_browsers/_stealth.py`.
-2. **Chrome lifecycle + CDP attach**: WE launch Chrome
+2. **Chrome lifecycle + CDP attach** (`core/browser.chrome_args`): the CDP
+   WebSocket accepts only DevTools origins (devtools://devtools, the port's own
+   frontend, chrome-devtools-frontend.appspot.com) — never `*`. `--no-sandbox`
+   only in containers (`CHROME_NO_SANDBOX=auto`: the sandbox cannot start
+   there). Chrome runs in its own process group; stop_chrome kills the group.
+   Scrapling's stealth context options are deliberately NOT applied (we
+   attach to the profile's default context): the sessions were established
+   with real Chrome's own fingerprint, and changing it invites checkpoints.
+   WE launch Chrome
    (`core/browser.py:launch_cdp_chrome`) with `--remote-debugging-port` —
    never let scrapling launch it: playwright forces
    `--remote-debugging-pipe`, which DISABLES the HTTP DevTools endpoint
@@ -107,9 +115,13 @@ description, link, extra(dict), scraped_at`.
    for `kill_zombie_chrome()` — inside a page_action `pkill -f chrome`
    kills the running browser itself (shipped once).
 6. **Container Chrome startup chain** (each one shipped as a bug):
-   a. `xvfb-run` needs the `xauth` package (not part of `xvfb`).
-   b. `xvfb-run` hangs forever when it is PID 1 (SIGUSR1 readiness
-      handshake) → compose needs `init: true` (tini).
+   a. `docker/entrypoint.sh` starts Xvfb and `exec`s the command. Do NOT go
+      back to `xvfb-run` in production: its shell sat between tini and
+      Python and died on `docker stop`, so the SIGTERM handler never ran
+      (Chrome not stopped cleanly, runs left `running`). Keep the screen at
+      1280x1024x24 — the logged-in sessions were established with it.
+   b. compose needs `init: true` (tini as PID 1 reaps orphans and forwards
+      SIGTERM; `stop_grace_period: 30s` lets cleanup finish).
    c. Chrome core-dumps (SIGTRAP) at startup if the user has no writable
       HOME — `useradd -r` doesn't create one; Dockerfile sets
       `HOME=/home/scraper`.

@@ -29,7 +29,10 @@ import inspect
 import logging
 import os
 import shutil
+import signal
+import socket
 import subprocess
+import tempfile
 import time
 import urllib.request
 from contextlib import contextmanager
@@ -115,12 +118,49 @@ def _find_chrome() -> str:
     return "/opt/google/chrome/chrome"
 
 
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def chrome_args(chrome: str, profile_dir: str, port: int, headless: bool = False,
+                no_sandbox: bool | None = None) -> list[str]:
+    """Launch flags. The DevTools WebSocket only accepts DevTools frontends:
+    chrome://inspect (devtools://devtools), the frontend served on the port
+    itself, and the hosted frontend Chrome advertises in /json/list
+    (scripts/inspect_chrome.py prints it). Playwright sends no Origin and is
+    always accepted. With "*", any web page open on this host could try to
+    drive the logged-in LinkedIn/Indeed sessions."""
+    if no_sandbox is None:
+        from config import CHROME_NO_SANDBOX
+        no_sandbox = CHROME_NO_SANDBOX
+    args = [
+        chrome,
+        f"--user-data-dir={profile_dir}",
+        f"--remote-debugging-port={port}",
+        "--remote-allow-origins=" + ",".join((
+            "devtools://devtools", f"http://localhost:{port}", f"http://127.0.0.1:{port}",
+            "https://chrome-devtools-frontend.appspot.com")),
+        *(["--no-sandbox"] if no_sandbox else []),
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "about:blank",
+    ]
+    if headless:
+        args.insert(1, "--headless=new")
+    return args
+
+
 def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
                       timeout: float = 30.0, clean_locks: bool = False) -> subprocess.Popen:
     """Launch real Chrome with an HTTP DevTools endpoint on `port`.
 
     Returns the process; call stop_chrome() when done. Raises RuntimeError
-    if the endpoint doesn't come up.
+    if the port is already taken (we would attach to someone else's Chrome
+    and profile) or if the endpoint doesn't come up; an early exit reports
+    the tail of Chrome's stderr.
 
     clean_locks: remove stale Singleton* profile locks first. Only safe when
     no other Chrome can be using this profile (container mode — where the
@@ -134,28 +174,20 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
                 os.remove(os.path.join(profile_dir, name))
             except OSError:
                 pass
+    if _port_in_use(port):
+        raise RuntimeError(f"CDP port {port} is already in use (another Chrome still running?)")
 
-    args = [
-        _find_chrome(),
-        f"--user-data-dir={profile_dir}",
-        f"--remote-debugging-port={port}",
-        "--remote-allow-origins=*",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "about:blank",
-    ]
-    if headless:
-        args.insert(1, "--headless=new")
-
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + timeout
+    args = chrome_args(_find_chrome(), profile_dir, port, headless=headless)
+    stderr = tempfile.TemporaryFile()
+    # Own process group, so stop_chrome() also ends renderer/GPU/zygote children.
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+    proc._rtjobs_stderr = stderr
+    deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/json/version"
     launched = time.monotonic()
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"Chrome exited early with code {proc.returncode}")
+            raise RuntimeError(f"Chrome exited early with code {proc.returncode}: {_stderr_tail(proc)}")
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
@@ -170,16 +202,42 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     raise RuntimeError(f"Chrome CDP endpoint never came up on port {port}")
 
 
-def stop_chrome(proc: subprocess.Popen | None) -> None:
-    """Terminate Chrome gracefully, force-kill if it doesn't exit."""
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
+def _stderr_tail(proc, limit: int = 300) -> str:
+    """Last non-empty stderr line(s) of a dead Chrome, for the failure alert."""
+    stream = getattr(proc, "_rtjobs_stderr", None)
+    if stream is None:
+        return "no stderr captured"
     try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        stream.seek(0)
+        lines = [line for line in stream.read().decode(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return "stderr unreadable"
+    return (" | ".join(lines[-2:]) or "no stderr output")[-limit:]
+
+
+def stop_chrome(proc: subprocess.Popen | None) -> None:
+    """Terminate Chrome's whole process group; force-kill if it doesn't exit."""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        _signal_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _signal_group(proc, signal.SIGKILL)
+            proc.wait(timeout=5)
+    # Children can outlive the parent briefly; never leave them behind.
+    _signal_group(proc, signal.SIGKILL)
+    stream = getattr(proc, "_rtjobs_stderr", None)
+    if stream is not None:
+        stream.close()
+
+
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def cdp_url_for(port: int) -> str:

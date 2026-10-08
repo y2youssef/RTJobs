@@ -435,6 +435,54 @@ def verify(directory):
     verify_browser_recovery()
     verify_linkedin_login()
     verify_first_page_and_schedule()
+    verify_browser_launch()
+
+
+def verify_browser_launch():
+    """CDP origin allow-list, sandbox switch, busy port, group stop, crash stderr."""
+    import signal as signals
+    import socket
+    import tempfile as tmp
+    from core import browser
+
+    args = browser.chrome_args("chrome", "/profile", 9222, no_sandbox=False)
+    origins = next(a for a in args if a.startswith("--remote-allow-origins="))
+    assert "*" not in origins and "devtools://devtools" in origins and "http://localhost:9222" in origins
+    assert "--no-sandbox" not in args and "--no-sandbox" in browser.chrome_args("chrome", "/p", 9222, no_sandbox=True)
+
+    # A port someone else already serves is refused before anything launches.
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0)); busy.listen()
+        with patch.object(browser.subprocess, "Popen", side_effect=AssertionError("must not launch")):
+            try:
+                browser.launch_cdp_chrome(tmp.mkdtemp(), busy.getsockname()[1])
+            except RuntimeError as exc:
+                assert "already in use" in str(exc)
+            else:
+                raise AssertionError("busy CDP port accepted")
+
+    # An early exit reports Chrome's own stderr instead of a bare exit code.
+    fake = Path(tmp.mkdtemp()) / "chrome"
+    fake.write_text("#!/bin/sh\necho 'Failed to move to new namespace' >&2\nexit 5\n"); fake.chmod(0o755)
+    with patch.object(browser, "_find_chrome", return_value=str(fake)):
+        try:
+            browser.launch_cdp_chrome(tmp.mkdtemp(), 1)
+        except RuntimeError as exc:
+            assert "code 5" in str(exc) and "new namespace" in str(exc), exc
+        else:
+            raise AssertionError("dead Chrome reported as started")
+
+    # stop_chrome ends the whole process group (renderer/GPU children too).
+    group = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60"], start_new_session=True)
+    time.sleep(0.2)
+    browser.stop_chrome(group)
+    time.sleep(0.2)
+    try:
+        os.killpg(group.pid, 0)
+        raise AssertionError("Chrome child processes survived stop_chrome")
+    except ProcessLookupError:
+        pass
+    print("PASS Chrome launch: origin allow-list, sandbox switch, busy port, crash stderr, process-group stop")
 
 
 def verify_first_page_and_schedule():

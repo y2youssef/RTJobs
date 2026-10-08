@@ -26,8 +26,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# xvfb-run needs xauth at runtime. Kept in its own layer after pip so the
-# slow dependency layer stays cached when this changes.
+# xauth is only used by xvfb-run (manual debugging); production starts Xvfb
+# in docker/entrypoint.sh. Kept in its own layer after pip so the slow
+# dependency layer stays cached when this changes.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xauth \
     && rm -rf /var/lib/apt/lists/*
@@ -48,5 +49,6 @@ ENV HOME=/home/scraper
 
 USER scraper
 
-# xvfb-run gives headful Chrome a virtual display; attach live via CDP on 9222.
-CMD ["xvfb-run", "-a", "python", "main.py"]
+# The entrypoint starts Xvfb (virtual display for headful Chrome) and execs
+# the command so it receives SIGTERM; attach live via CDP on 9222.
+CMD ["/app/docker/entrypoint.sh", "python", "main.py"]
