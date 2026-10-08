@@ -121,6 +121,18 @@ CREATE TABLE IF NOT EXISTS enrichment_requests (
     usage_json TEXT,
     error TEXT
 );
+-- Latency instrumentation: one row per measured pipeline stage
+-- (chrome cold start, login, search pages, detail panels, human delays,
+-- queue pickup, model requests, delivery). Written by core/timing.py.
+CREATE TABLE IF NOT EXISTS latency_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    stage       TEXT NOT NULL,
+    seconds     REAL NOT NULL,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_latency_stage ON latency_events(stage, recorded_at);
 """
 
 
@@ -324,7 +336,7 @@ def defer_notification(job_id: int, minimum_delay: float = 0):
 def pending_enrichments(limit: int) -> list[sqlite3.Row]:
     with get_db() as conn:
         return conn.execute(
-            "SELECT j.*, e.attempts FROM job_enrichments e JOIN jobs j ON j.id=e.job_id"
+            "SELECT j.*, e.attempts,e.error FROM job_enrichments e JOIN jobs j ON j.id=e.job_id"
             " WHERE e.state='pending' AND e.next_attempt_at <= ? ORDER BY e.job_id LIMIT ?",
             (now_str(), limit),
         ).fetchall()
@@ -344,7 +356,7 @@ def pending_enrichment_batch() -> list[sqlite3.Row]:
             (now_str(),)).fetchone()
         if batch is None:
             return []
-        return conn.execute("SELECT j.*,e.attempts,e.batch_id FROM job_enrichments e "
+        return conn.execute("SELECT j.*,e.attempts,e.batch_id,e.error FROM job_enrichments e "
             "JOIN jobs j ON j.id=e.job_id WHERE e.state='pending' AND e.batch_id IS ? ORDER BY e.job_id",
             (batch[0],)).fetchall()
 
@@ -464,6 +476,34 @@ def get_pipeline_state(name: str) -> dict:
 
 def touch_worker(name: str, phase: str):
     set_pipeline_state("worker:" + name, {"phase": phase})
+
+
+def record_latency(source: str, stage: str, seconds: float, detail: dict | None = None):
+    """One latency measurement row (core/timing.py); detail stored as JSON."""
+    with get_db() as conn:
+        conn.execute("INSERT INTO latency_events(recorded_at, source, stage, seconds, detail) VALUES (?,?,?,?,?)",
+                     (now_str(), source, stage, seconds,
+                      json.dumps(detail, ensure_ascii=False) if detail else None))
+
+
+def scrape_batch_finished_at(batch_id) -> str | None:
+    """Cycle commit time — the anchor for enrichment queue-delay metrics."""
+    if batch_id is None:
+        return None
+    with get_db() as conn:
+        row = conn.execute("SELECT finished_at FROM scrape_batches WHERE id=?", (batch_id,)).fetchone()
+        return row[0] if row else None
+
+
+def oldest_undelivered_ready_at() -> str | None:
+    """Oldest ready-but-undelivered timestamp — delivery queue-delay anchor."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT MIN(CASE WHEN e.job_id IS NULL THEN j.scraped_at ELSE e.updated_at END) AS oldest "
+            "FROM jobs j LEFT JOIN job_enrichments e ON e.job_id=j.id "
+            "WHERE j.notified=0 AND (e.job_id IS NULL OR (e.state='ready' AND e.schema_version=?))",
+            (ENRICHMENT_SCHEMA_VERSION,)).fetchone()
+        return row[0] if row else None
 
 
 def reserve_enrichment_spend(day: str, amount: float, budget: float) -> bool:

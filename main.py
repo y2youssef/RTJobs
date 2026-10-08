@@ -8,7 +8,7 @@ import sys
 from boards.linkedin import LinkedInBoard
 from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
-from core import db, login_state
+from core import db, login_state, timing
 from core.log import setup_logging
 from config import DB_PATH, ENRICHMENT_ENABLED
 
@@ -58,6 +58,10 @@ def main() -> int:
 
     db.init_db()
 
+    # Anchor for container cold-start latency: the gap between ofelia's
+    # 6-minute grid and this entry covers docker start + xvfb + imports.
+    timing.record("scraper", "process_start", 0)
+
     # Serialize manual runs too: a cycle must never close another live scrape.
     with open(DB_PATH + '.scraper.lock', 'a') as lock:
         try:
@@ -99,7 +103,9 @@ def _run_boards() -> int:
         db.touch_worker("scraper", board.name)
         logger.info("Running board: %s", board.name)
         try:
-            total_new += board.run()
+            with timing.stage("scraper", "board_run", lambda: {"board": board.name, "new": gained}):
+                gained = board.run()
+            total_new += gained
             if not ENRICHMENT_ENABLED:
                 from core import telegram
 

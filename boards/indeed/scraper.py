@@ -33,7 +33,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import INDEED_SEARCH_URL
-from core import db, markup
+from core import db, markup, timing
 from core.browser import patch_no_load_wait
 from core.scrape_health import ScrapeHealth
 
@@ -383,6 +383,8 @@ class IndeedJobSpider(Spider):
         self.health = ScrapeHealth("indeed")
 
         super().__init__(*args, **kwargs)
+        from core.log import configure_spider_logging
+        configure_spider_logging(self)
 
     def configure_sessions(self, manager):
         manager.add(
@@ -403,6 +405,7 @@ class IndeedJobSpider(Spider):
             page_action=self.scan_search_page,
         )
 
+    @timing.timed("indeed", "search_page", lambda spider, page: {"new_jobs": len(spider._page_jobs)})
     async def scan_search_page(self, page):
         self._page_jobs = []
         self.health.check("search_fetch", True)
@@ -471,6 +474,7 @@ class IndeedJobSpider(Spider):
         if blob_missing and not jobs:
             markup.save_snapshot("indeed", "search_empty", html)
 
+    @timing.timed("indeed", "detail_page", lambda spider, page, key="": {"jobkey": (key or "")[:16]})
     async def scan_detail_page(self, page, key: str = ""):
         # Keep the requested identity even if the page redirects to login.
         key = key or _jobkey_from_url(page.url)
@@ -478,7 +482,9 @@ class IndeedJobSpider(Spider):
         if job is None:
             return
 
-        await asyncio.sleep(random.uniform(1.5, 3.0))  # human-like pacing
+        pause = random.uniform(1.5, 3.0)  # human-like pacing
+        timing.record("indeed", "human_delay", pause, {"jobkey": key[:16]})
+        await asyncio.sleep(pause)
 
         try:
             html = await page.content()

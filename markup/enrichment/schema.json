@@ -11,272 +11,1296 @@
             "minimum": 1
           },
           "classification": {
-            "type": "object",
-            "properties": {
-              "job_family": {
-                "type": "string",
-                "enum": [
-                  "sales_business_development",
-                  "accounting_finance_banking",
-                  "customer_service_call_center",
-                  "human_resources_recruitment",
-                  "marketing_ecommerce",
-                  "software_engineering",
-                  "data_ai_analytics",
-                  "it_cloud_cybersecurity",
-                  "engineering_construction",
-                  "industrial_manufacturing_maintenance",
-                  "supply_chain_procurement_logistics",
-                  "operations_projects_quality",
-                  "administration_office_support",
-                  "design_creative",
-                  "content_media_communications",
-                  "healthcare_medical",
-                  "education_training",
-                  "legal_compliance_risk",
-                  "product_business_analysis",
-                  "hospitality_tourism_food_service",
-                  "retail_store_operations",
-                  "safety_security_facilities",
-                  "science_research",
-                  "consulting_strategy",
-                  "general_management",
-                  "other"
-                ]
-              },
-              "specialization": {
-                "type": "string",
-                "enum": [
-                  "academic_administration",
-                  "account_management",
-                  "administrative_assistance",
-                  "agile_scrum_delivery",
-                  "ai_data_annotation",
-                  "ai_llm",
-                  "allied_health",
-                  "analytics_engineering",
-                  "ap_ar",
-                  "architecture_bim",
-                  "art_direction",
-                  "audit_assurance",
-                  "automation_controls",
-                  "b2b_corporate_sales",
-                  "backend",
-                  "banking_operations",
-                  "biomedical_laboratory",
-                  "branch_operations",
-                  "brand_management",
-                  "business_analysis",
-                  "business_development",
-                  "business_operations",
-                  "c_suite",
-                  "call_center",
-                  "cashiering",
-                  "chemistry_materials",
-                  "civil_site",
-                  "cleaning_facility_services",
-                  "cloud_devops",
-                  "compensation_benefits",
-                  "complaints_retention",
-                  "compliance_governance",
-                  "construction_project_management",
-                  "content_creation",
-                  "content_moderation",
-                  "contracts_legal",
-                  "cost_accounting",
-                  "country_regional_management",
-                  "credit_collections",
-                  "crm_lifecycle",
-                  "culinary_kitchen",
-                  "customer_experience",
-                  "customer_service",
-                  "customer_success",
-                  "customer_support",
-                  "cybersecurity",
-                  "data_analysis_bi",
-                  "data_engineering",
-                  "data_entry_documentation",
-                  "data_science_ml",
-                  "database_administration",
-                  "dentistry",
-                  "digital_marketing",
-                  "ecommerce_marketplace",
-                  "electrical_building",
-                  "electrical_industrial",
-                  "embedded",
-                  "employee_relations",
-                  "erp_crm",
-                  "events_activations",
-                  "executive_assistance",
-                  "facilities_management",
-                  "field_sales",
-                  "field_service",
-                  "financial_control",
-                  "financial_reporting_fpa",
-                  "food_beverage_service",
-                  "founder_owner",
-                  "front_office_guest_services",
-                  "frontend",
-                  "full_stack",
-                  "game_development",
-                  "general",
-                  "general_accounting",
-                  "general_management",
-                  "graphic_design",
-                  "healthcare_administration",
-                  "higher_education",
-                  "hotel_operations",
-                  "housekeeping",
-                  "hr_business_partner",
-                  "hr_management",
-                  "hr_operations_personnel",
-                  "hse_safety",
-                  "import_export_customs",
-                  "infrastructure",
-                  "instructional_design",
-                  "insurance_financial_sales",
-                  "insurance_underwriting_claims",
-                  "interior_design",
-                  "it_support_helpdesk",
-                  "journalism_editorial",
-                  "laboratory_research",
-                  "language_instruction",
-                  "learning_development",
-                  "legal_counsel_litigation",
-                  "life_sciences",
-                  "logistics_transportation",
-                  "maintenance",
-                  "management_consulting",
-                  "market_research",
-                  "mechanical_design",
-                  "medical_affairs",
-                  "medical_pharma_sales",
-                  "mental_health_therapy",
-                  "mep_hvac",
-                  "merchandising",
-                  "mobile",
-                  "motion_3d",
-                  "nursing",
-                  "office_management",
-                  "operations_management",
-                  "organizational_consulting",
-                  "payroll_hr",
-                  "performance_media_buying",
-                  "pharmacy",
-                  "physicians",
-                  "physics_mathematics",
-                  "planning_qs_cost",
-                  "plant_management",
-                  "pr_corporate_communications",
-                  "process_improvement",
-                  "process_industrial",
-                  "procurement_purchasing",
-                  "product_design",
-                  "product_management",
-                  "product_owner",
-                  "production",
-                  "project_program_management",
-                  "qa_testing",
-                  "quality_assurance",
-                  "quality_inspection",
-                  "real_estate_sales",
-                  "reception_front_desk",
-                  "regulatory_affairs",
-                  "reservations_ticketing",
-                  "retail_operations",
-                  "retail_sales",
-                  "risk_aml_fraud",
-                  "sales_management",
-                  "sales_operations",
-                  "school_teaching",
-                  "scientific_rd",
-                  "security",
-                  "seo_content_marketing",
-                  "service_delivery",
-                  "shipping_freight",
-                  "social_media",
-                  "software_architecture",
-                  "store_management",
-                  "strategy",
-                  "supply_demand_planning",
-                  "surveying",
-                  "systems_network",
-                  "talent_acquisition",
-                  "tax",
-                  "technical_office",
-                  "technical_presales",
-                  "telesales_inside_sales",
-                  "tendering_estimation",
-                  "transformation",
-                  "translation_localization",
-                  "travel_tourism",
-                  "treasury",
-                  "ui_ux",
-                  "veterinary",
-                  "video_editing_production",
-                  "vocational_training",
-                  "warehouse_inventory",
-                  "writing_copywriting"
-                ]
-              },
-              "routing_confidence": {
-                "type": "string",
-                "enum": [
-                  "High",
-                  "Medium",
-                  "Low"
-                ]
-              },
-              "needs_review": {
-                "type": "boolean"
-              },
-              "employer_sector": {
-                "type": [
-                  "string",
-                  "null"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "sales_business_development"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "field_sales",
+                      "b2b_corporate_sales",
+                      "business_development",
+                      "account_management",
+                      "telesales_inside_sales",
+                      "technical_presales",
+                      "medical_pharma_sales",
+                      "real_estate_sales",
+                      "insurance_financial_sales",
+                      "retail_sales",
+                      "sales_management",
+                      "sales_operations",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
                 ],
-                "enum": [
-                  "technology_telecom",
-                  "banking_finance_insurance",
-                  "healthcare_pharma",
-                  "construction_engineering_services",
-                  "real_estate_property",
-                  "manufacturing_industrial",
-                  "energy_utilities",
-                  "automotive_mobility",
-                  "retail_ecommerce",
-                  "fmcg_consumer_goods",
-                  "logistics_transportation",
-                  "hospitality_tourism",
-                  "education",
-                  "media_advertising_entertainment",
-                  "professional_services_bpo",
-                  "government_ngo_development",
-                  "agriculture",
-                  "aviation",
-                  "other",
-                  null
-                ]
+                "additionalProperties": false
               },
-              "posting_entity_type": {
-                "type": "string",
-                "enum": [
-                  "direct_employer",
-                  "recruitment_staffing",
-                  "outsourcing_provider",
-                  "unknown"
-                ]
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "accounting_finance_banking"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "general_accounting",
+                      "ap_ar",
+                      "cost_accounting",
+                      "financial_reporting_fpa",
+                      "treasury",
+                      "audit_assurance",
+                      "tax",
+                      "financial_control",
+                      "credit_collections",
+                      "banking_operations",
+                      "insurance_underwriting_claims",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "customer_service_call_center"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "call_center",
+                      "customer_service",
+                      "customer_support",
+                      "customer_experience",
+                      "customer_success",
+                      "complaints_retention",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "human_resources_recruitment"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "talent_acquisition",
+                      "hr_operations_personnel",
+                      "hr_business_partner",
+                      "compensation_benefits",
+                      "learning_development",
+                      "payroll_hr",
+                      "employee_relations",
+                      "hr_management",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "marketing_ecommerce"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "digital_marketing",
+                      "performance_media_buying",
+                      "social_media",
+                      "brand_management",
+                      "ecommerce_marketplace",
+                      "seo_content_marketing",
+                      "market_research",
+                      "crm_lifecycle",
+                      "events_activations",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "software_engineering"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "frontend",
+                      "backend",
+                      "full_stack",
+                      "mobile",
+                      "qa_testing",
+                      "software_architecture",
+                      "embedded",
+                      "game_development",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "data_ai_analytics"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "data_analysis_bi",
+                      "data_engineering",
+                      "data_science_ml",
+                      "ai_llm",
+                      "analytics_engineering",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "it_cloud_cybersecurity"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "it_support_helpdesk",
+                      "systems_network",
+                      "cloud_devops",
+                      "cybersecurity",
+                      "database_administration",
+                      "erp_crm",
+                      "infrastructure",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "engineering_construction"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "civil_site",
+                      "architecture_bim",
+                      "mep_hvac",
+                      "electrical_building",
+                      "technical_office",
+                      "planning_qs_cost",
+                      "tendering_estimation",
+                      "construction_project_management",
+                      "surveying",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "industrial_manufacturing_maintenance"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "production",
+                      "maintenance",
+                      "mechanical_design",
+                      "electrical_industrial",
+                      "automation_controls",
+                      "process_industrial",
+                      "quality_inspection",
+                      "field_service",
+                      "plant_management",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "supply_chain_procurement_logistics"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "procurement_purchasing",
+                      "logistics_transportation",
+                      "warehouse_inventory",
+                      "supply_demand_planning",
+                      "import_export_customs",
+                      "shipping_freight",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "operations_projects_quality"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "operations_management",
+                      "project_program_management",
+                      "service_delivery",
+                      "quality_assurance",
+                      "process_improvement",
+                      "business_operations",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "administration_office_support"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "administrative_assistance",
+                      "office_management",
+                      "executive_assistance",
+                      "reception_front_desk",
+                      "data_entry_documentation",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "design_creative"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "graphic_design",
+                      "ui_ux",
+                      "interior_design",
+                      "motion_3d",
+                      "product_design",
+                      "art_direction",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "content_media_communications"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "writing_copywriting",
+                      "content_creation",
+                      "video_editing_production",
+                      "pr_corporate_communications",
+                      "journalism_editorial",
+                      "translation_localization",
+                      "content_moderation",
+                      "ai_data_annotation",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "healthcare_medical"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "physicians",
+                      "pharmacy",
+                      "nursing",
+                      "dentistry",
+                      "allied_health",
+                      "biomedical_laboratory",
+                      "mental_health_therapy",
+                      "veterinary",
+                      "medical_affairs",
+                      "healthcare_administration",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "education_training"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "school_teaching",
+                      "language_instruction",
+                      "higher_education",
+                      "vocational_training",
+                      "instructional_design",
+                      "academic_administration",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "legal_compliance_risk"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "legal_counsel_litigation",
+                      "contracts_legal",
+                      "compliance_governance",
+                      "risk_aml_fraud",
+                      "regulatory_affairs",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "product_business_analysis"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "product_management",
+                      "product_owner",
+                      "business_analysis",
+                      "agile_scrum_delivery",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "hospitality_tourism_food_service"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "culinary_kitchen",
+                      "food_beverage_service",
+                      "front_office_guest_services",
+                      "housekeeping",
+                      "reservations_ticketing",
+                      "travel_tourism",
+                      "hotel_operations",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "retail_store_operations"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "store_management",
+                      "cashiering",
+                      "merchandising",
+                      "branch_operations",
+                      "retail_operations",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "safety_security_facilities"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "hse_safety",
+                      "security",
+                      "facilities_management",
+                      "cleaning_facility_services",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "science_research"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "life_sciences",
+                      "chemistry_materials",
+                      "physics_mathematics",
+                      "scientific_rd",
+                      "laboratory_research",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "consulting_strategy"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "management_consulting",
+                      "strategy",
+                      "transformation",
+                      "organizational_consulting",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "general_management"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "general_management",
+                      "country_regional_management",
+                      "c_suite",
+                      "founder_owner",
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "High",
+                      "Medium",
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean"
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "job_family": {
+                    "type": "string",
+                    "enum": [
+                      "other"
+                    ]
+                  },
+                  "specialization": {
+                    "type": "string",
+                    "enum": [
+                      "general"
+                    ]
+                  },
+                  "routing_confidence": {
+                    "type": "string",
+                    "enum": [
+                      "Low"
+                    ]
+                  },
+                  "needs_review": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "employer_sector": {
+                    "$ref": "#/$defs/employer_sector"
+                  },
+                  "posting_entity_type": {
+                    "$ref": "#/$defs/posting_entity_type"
+                  }
+                },
+                "required": [
+                  "job_family",
+                  "specialization",
+                  "routing_confidence",
+                  "needs_review",
+                  "employer_sector",
+                  "posting_entity_type"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "job_family",
-              "specialization",
-              "routing_confidence",
-              "needs_review",
-              "employer_sector",
-              "posting_entity_type"
-            ],
-            "additionalProperties": false
+            ]
           },
           "seniority": {
             "type": "object",
@@ -648,5 +1672,44 @@
   "required": [
     "jobs"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "employer_sector": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "technology_telecom",
+        "banking_finance_insurance",
+        "healthcare_pharma",
+        "construction_engineering_services",
+        "real_estate_property",
+        "manufacturing_industrial",
+        "energy_utilities",
+        "automotive_mobility",
+        "retail_ecommerce",
+        "fmcg_consumer_goods",
+        "logistics_transportation",
+        "hospitality_tourism",
+        "education",
+        "media_advertising_entertainment",
+        "professional_services_bpo",
+        "government_ngo_development",
+        "agriculture",
+        "aviation",
+        "other",
+        null
+      ]
+    },
+    "posting_entity_type": {
+      "type": "string",
+      "enum": [
+        "direct_employer",
+        "recruitment_staffing",
+        "outsourcing_provider",
+        "unknown"
+      ]
+    }
+  }
 }

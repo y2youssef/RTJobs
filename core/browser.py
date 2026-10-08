@@ -37,12 +37,17 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 
-def patch_no_load_wait(page):
+def patch_no_load_wait(page, *, selector_readiness=False):
     """Make this page's navigations wait for domcontentloaded, not load.
 
     Returns a coroutine for async pages (scrapling awaits page_setup in
     async sessions) and None for sync pages.
+
+    Search pages with explicit bounded readiness checks may opt into document
+    commit only. Their page_action owns readiness, including access checks;
+    login and Cloudflare sessions retain the default DOM-ready behavior.
     """
+    page._rtjobs_selector_readiness = selector_readiness
     if inspect.iscoroutinefunction(page.goto):
         return _patch_async(page)
     return _patch_sync(page)
@@ -54,7 +59,7 @@ def _patch_sync(page) -> None:
     orig_goto = page.goto
 
     def goto(url, *args, **kwargs):
-        kwargs.setdefault("wait_until", "domcontentloaded")
+        kwargs.setdefault("wait_until", "commit" if page._rtjobs_selector_readiness else "domcontentloaded")
         return orig_goto(url, *args, **kwargs)
 
     page.goto = goto
@@ -62,7 +67,9 @@ def _patch_sync(page) -> None:
     orig_wait = page.wait_for_load_state
 
     def wait_for_load_state(state=None, *args, **kwargs):
-        if state == "load":
+        if page._rtjobs_selector_readiness and state in (None, "load", "domcontentloaded"):
+            return None
+        if state in (None, "load"):
             state = "domcontentloaded"
         return orig_wait(state, *args, **kwargs)
 
@@ -76,7 +83,7 @@ async def _patch_async(page) -> None:
     orig_goto = page.goto
 
     async def goto(url, *args, **kwargs):
-        kwargs.setdefault("wait_until", "domcontentloaded")
+        kwargs.setdefault("wait_until", "commit" if page._rtjobs_selector_readiness else "domcontentloaded")
         return await orig_goto(url, *args, **kwargs)
 
     page.goto = goto
@@ -84,7 +91,9 @@ async def _patch_async(page) -> None:
     orig_wait = page.wait_for_load_state
 
     async def wait_for_load_state(state=None, *args, **kwargs):
-        if state == "load":
+        if page._rtjobs_selector_readiness and state in (None, "load", "domcontentloaded"):
+            return None
+        if state in (None, "load"):
             state = "domcontentloaded"
         return await orig_wait(state, *args, **kwargs)
 
@@ -143,6 +152,7 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + timeout
     url = f"http://127.0.0.1:{port}/json/version"
+    launched = time.monotonic()
     while time.time() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"Chrome exited early with code {proc.returncode}")
@@ -150,6 +160,9 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
                     logger.info(f"[browser] Chrome up — CDP attachable at http://localhost:{port}")
+                    from core import timing
+                    timing.record("browser", "chrome_cold_start", time.monotonic() - launched,
+                                  {"profile": profile_dir})
                     return proc
         except Exception:
             time.sleep(0.3)

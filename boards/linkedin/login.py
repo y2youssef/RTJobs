@@ -275,6 +275,8 @@ def _verify_routing(page, selectors: dict) -> bool:
 
 def ensure_logged_in(page, selectors: dict) -> bool:
     """Entry point (used as page_action). Returns True if ready to scrape."""
+    from core import timing
+
     if login_state.is_blocked():
         remaining = login_state.remaining_seconds()
         logger.info(f"[login] Blocked for another {remaining}s — skipping run.")
@@ -286,7 +288,9 @@ def ensure_logged_in(page, selectors: dict) -> bool:
         return True
 
     if _on_checkpoint(page.url):
-        return _handle_checkpoint(page, selectors)
+        with timing.stage("linkedin", "checkpoint_wait"):
+            return _handle_checkpoint(page, selectors)
 
     logger.info("[login] Not logged in — starting automated login.")
-    return _do_login(page, selectors)
+    with timing.stage("linkedin", "login_flow"):
+        return _do_login(page, selectors)

@@ -19,6 +19,28 @@ import sys
 _configured = False
 
 
+class _CloudflareStatus(logging.Filter):
+    """Scrapling treats the absence of a challenge as ERROR; it is normal."""
+
+    def filter(self, record):
+        if record.name.startswith("scrapling") and record.getMessage() == "No Cloudflare challenge found.":
+            record.levelno = logging.DEBUG
+            record.levelname = "DEBUG"
+            return logging.getLogger(record.name).isEnabledFor(logging.DEBUG)
+        return True
+
+
+_cloudflare_status = _CloudflareStatus()
+
+
+def configure_spider_logging(spider):
+    """Use application handlers/level while retaining Scrapling's counters."""
+    spider.logger.setLevel(getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO))
+    spider.logger.handlers[:] = [spider._log_counter]
+    spider.logger.propagate = True
+    spider.logger.addFilter(_cloudflare_status)
+
+
 def setup_logging() -> None:
     """Configure root logging once. Safe to call multiple times (idempotent)."""
     global _configured
@@ -59,7 +81,15 @@ def setup_logging() -> None:
     root.setLevel(level)
     root.handlers.clear()
     for h in handlers:
+        h.setLevel(level)
         root.addHandler(h)
+    # Standalone fetchers install their own console handler. Route both them
+    # and spiders through the root once, including the rotating file handler.
+    scrapling = logging.getLogger("scrapling")
+    scrapling.handlers.clear()
+    scrapling.setLevel(level)
+    scrapling.propagate = True
+    scrapling.addFilter(_cloudflare_status)
     # Silence overly verbose libraries unless explicitly requested
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

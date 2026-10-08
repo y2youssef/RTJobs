@@ -20,17 +20,19 @@ import requests
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, CLASSIFIER_MODEL,
                     CLASSIFIER_DAILY_BUDGET_USD, CLASSIFIER_RETRY_MAX_SECONDS,
-                    ENRICHMENT_POLL_SECONDS)
-from core import db
-from core.classify import Enricher, EnrichmentError
+                    CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS, ENRICHMENT_POLL_SECONDS)
+from core import db, timing
+from core.classify import Enricher, EnrichmentError, OutputValidationError
 from core.log import setup_logging
 from core.wakeup import Wakeup
 
 logger = logging.getLogger(__name__)
 
 
-def _retry_time(attempts):
-    delay = min(CLASSIFIER_RETRY_MAX_SECONDS, 60 * 2 ** min(attempts, 10))
+def _retry_time(attempts, validation=False):
+    ceiling = CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS if validation else CLASSIFIER_RETRY_MAX_SECONDS
+    base = 15 if validation else 60
+    delay = min(ceiling, base * 2 ** min(attempts, 10))
     return (datetime.now() + timedelta(seconds=delay)).strftime('%Y-%m-%d %H:%M:%S')
 
 
@@ -44,10 +46,15 @@ def _defer(jobs, error, preview, retry_at=None, attempted=True):
              'cached': False, 'error': error, 'next_attempt_at': retry_at} for job in jobs]
 
 
-def _reconcile(day, bound, usage):
+def _billed(usage) -> bool:
+    """True when the provider reported a usable actual cost for this request."""
     actual = usage.get('cost')
-    if isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isfinite(actual) and actual >= 0:
-        db.reconcile_enrichment_spend(day, bound, actual)
+    return isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isfinite(actual) and actual >= 0
+
+
+def _reconcile(day, bound, usage):
+    if _billed(usage):
+        db.reconcile_enrichment_spend(day, bound, usage['cost'])
 
 
 def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> dict:
@@ -97,7 +104,12 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
         else:
             try:
                 data = [prepared[job['id']][0] for job in outstanding]
-                bound = client.request_bound(data)
+                # These are bounded, safe local validation messages persisted
+                # with the queue, so corrections survive worker restarts.
+                feedback = next((job.get('error', '') for job in outstanding
+                                 if (job.get('error') or '').startswith('Invalid enrichment:')), '')
+                retry_options = {'feedback': feedback[:1000]} if feedback else {}
+                bound = client.request_bound(data, **retry_options)
                 day = datetime.now().strftime('%Y-%m-%d')
                 if not db.reserve_enrichment_spend(day, bound, CLASSIFIER_DAILY_BUDGET_USD):
                     tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -113,30 +125,45 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                     stage = 'classify'
                     logger.info('Enrichment request=%s cycle=%s jobs=%s cached_jobs=%s',
                                 request_id, outstanding[0].get('batch_id'), len(outstanding), len(cached))
-                    results, usage = client.classify_batch(data)
+                    with timing.stage('enrichment', 'classify_request',
+                                              {'jobs': len(outstanding),
+                                               'cycle': outstanding[0].get('batch_id')}):
+                        results, usage = client.classify_batch(data, **retry_options)
                     # Defend the publication boundary even if the client changes.
-                    results = client.validate_batch({'jobs': results}, [job['id'] for job in outstanding])
-                    _reconcile(day, bound, usage)
-                    entries = [dict(job_id=result['job_id'], result=result,
-                                    input_hash=prepared[result['job_id']][1],
-                                    usage={'request_id': request_id, 'batch_size': len(outstanding)}) for result in results]
-                    if not preview:
-                        db.finish_enrichment_batch(entries, CLASSIFIER_MODEL, client.version,
-                                                   request_id=request_id, usage=usage)
-                        db.set_pipeline_state('classifier', {})
-                    else:
-                        db.finish_enrichment_request(request_id, usage)
+                    with timing.stage('enrichment', 'publish', {'jobs': len(outstanding)}):
+                        try:
+                            results = client.validate_batch({'jobs': results}, [job['id'] for job in outstanding])
+                        except ValueError as exc:
+                            raise OutputValidationError('Invalid enrichment: ' + str(exc), usage=usage) from exc
+                        _reconcile(day, bound, usage)
+                        entries = [dict(job_id=result['job_id'], result=result,
+                                        input_hash=prepared[result['job_id']][1],
+                                        usage={'request_id': request_id, 'batch_size': len(outstanding)}) for result in results]
+                        if not preview:
+                            db.finish_enrichment_batch(entries, CLASSIFIER_MODEL, client.version,
+                                                       request_id=request_id, usage=usage)
+                            db.set_pipeline_state('classifier', {})
+                        else:
+                            db.finish_enrichment_request(request_id, usage)
                     rows.extend(dict(job_id=result['job_id'], state='ready', result=result,
                                      cached=False, error='') for result in results)
             except (EnrichmentError, requests.RequestException, ValueError, TypeError, KeyError) as exc:
                 usage = getattr(exc, 'usage', None) or usage
                 if request_id:
+                    # A connection-level failure proves the request never
+                    # reached the provider, so release its whole reservation;
+                    # repeated offline attempts must not exhaust the daily
+                    # budget. Timeouts keep theirs (a timeout may still be
+                    # performed and billed by the provider).
+                    if isinstance(exc, requests.ConnectionError) and not _billed(usage):
+                        usage = {'cost': 0}
                     _reconcile(day, bound, usage)
                 status = getattr(exc, 'status_code', None) or getattr(getattr(exc, 'response', None), 'status_code', None)
                 # Do not expose response text, URLs with credentials or raw jobs.
                 error = (('OpenRouter HTTP ' + str(status)) if status else
-                         str(exc)[:300] if isinstance(exc, EnrichmentError) else type(exc).__name__ + ' during ' + stage)
-                retry_at = _retry_time(max(job.get('attempts', 0) for job in outstanding) + 1)
+                         str(exc)[:1000] if isinstance(exc, EnrichmentError) else type(exc).__name__ + ' during ' + stage)
+                retry_at = _retry_time(max(job.get('attempts', 0) for job in outstanding) + 1,
+                                      validation=isinstance(exc, OutputValidationError))
                 if request_id:
                     db.finish_enrichment_request(request_id, usage, error)
                 if not preview and (isinstance(exc, requests.RequestException) or status or stage == 'pricing'):
@@ -161,6 +188,18 @@ def process_job(client: Enricher, job: dict, preview: bool = False) -> dict:
     return dict(report['jobs'][0], usage=report['usage'])
 
 
+def _record_queue_delay(jobs: list[dict]):
+    """Time the cycle waited between the scrape commit and this pickup."""
+    committed = db.scrape_batch_finished_at(jobs[0].get('batch_id'))
+    anchor = committed or max(str(job.get('scraped_at') or '') for job in jobs)
+    try:
+        wait = (datetime.now() - datetime.fromisoformat(anchor)).total_seconds() if anchor else 0
+    except ValueError:
+        wait = 0
+    timing.record('enrichment', 'queue_delay', max(0, wait),
+                  {'jobs': len(jobs), 'cycle': jobs[0].get('batch_id')})
+
+
 def run_worker(client, stop, wakeup, once=False):
     """Scan on startup/commit, keeping timeout scans for recovery and retries."""
     while not stop.is_set():
@@ -169,6 +208,7 @@ def run_worker(client, stop, wakeup, once=False):
         jobs = [dict(row) for row in db.pending_enrichment_batch()]
         if jobs:
             logger.info('Enrichment picked up cycle=%s jobs=%s', jobs[0].get('batch_id'), len(jobs))
+            _record_queue_delay(jobs)
             db.touch_worker('enrichment', 'classifying')
             process_batch(client, jobs)
             db.touch_worker('enrichment', 'idle')

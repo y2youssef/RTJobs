@@ -25,7 +25,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import WUZZUF_SEARCH_URL
-from core import db, markup
+from core import db, markup, timing
 from core.browser import patch_no_load_wait
 from core.scrape_health import ScrapeHealth
 
@@ -265,6 +265,8 @@ class WuzzufJobSpider(Spider):
         self._repeat_found: bool = False
         self.health = ScrapeHealth("wuzzuf")
         super().__init__(*args, **kwargs)
+        from core.log import configure_spider_logging
+        configure_spider_logging(self)
 
     def configure_sessions(self, manager):
         manager.add(
@@ -285,6 +287,7 @@ class WuzzufJobSpider(Spider):
             page_action=self.scan_page,
         )
 
+    @timing.timed("wuzzuf", "search_page", lambda spider, page: {"new_jobs": len(spider._page_jobs)})
     async def scan_page(self, page):
         self._page_jobs = []
         self.health.check("search_fetch", True)

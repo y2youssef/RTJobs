@@ -10,7 +10,7 @@ from config import (
     WUZZUF_ENABLED,
     WUZZUF_PROFILE_DIR,
 )
-from core import db, telegram
+from core import db, telegram, timing
 from core.scrape_health import ScrapeHealth
 from core.browser import (
     chrome_session,
@@ -47,7 +47,9 @@ class WuzzufBoard(JobBoard):
             ) as cdp:
                 try:
                     health = ScrapeHealth(self.name)
-                    items = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+                    with timing.stage(self.name, "scrape_spider",
+                                      lambda: {"items": len(items), "status": health.status}):
+                        items = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
 
                     new_count = persist_jobs(self.name, items)
 

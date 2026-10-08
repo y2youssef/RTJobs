@@ -21,7 +21,7 @@ from config import (
     LINKEDIN_PROFILE_DIR,
     LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
 )
-from core import db, login_state, telegram
+from core import db, login_state, telegram, timing
 from core.scrape_health import ScrapeHealth
 from core.browser import (
     chrome_session,
@@ -96,7 +96,8 @@ class LinkedInBoard(JobBoard):
                 page_action=page_action,
             ) as session:
                 logger.info("[linkedin] Opening login page (redirects to feed if active)")
-                session.fetch(LINKEDIN_LOGIN_URL, wait=5000)
+                with timing.stage("linkedin", "login_check"):
+                    session.fetch(LINKEDIN_LOGIN_URL, wait=5000)
 
             if not outcome["ok"]:
                 logger.info("[linkedin] Login check failed — skipping scrape.")
@@ -104,7 +105,9 @@ class LinkedInBoard(JobBoard):
                 return 0
 
             health = ScrapeHealth(self.name)
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+            with timing.stage("linkedin", "scrape_spider",
+                              lambda: {"items": len(result["items"]), "status": health.status}):
+                result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
 
             if result["login_redirect"]:
                 logger.info("[linkedin] Session died mid-scrape — aborting.")

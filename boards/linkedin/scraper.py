@@ -20,11 +20,13 @@ from scrapling.spiders import Request, Response, Spider
 from config import (LINKEDIN_SEARCH_URL, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS,
                     LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS,
                     LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS,
+                    LINKEDIN_NAVIGATION_TIMEOUT_SECONDS,
                     LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS)
 from core import db, markup
 from core.browser import patch_no_load_wait
 from core.browser_diagnostics import BrowserDiagnostics
 from core.scrape_health import ScrapeHealth
+from core.log import configure_spider_logging
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,7 @@ class LinkedInJobSpider(Spider):
         self.diagnostics = BrowserDiagnostics({"www.linkedin.com", "linkedin.com", "static.licdn.com"})
 
         super().__init__(*args, **kwargs)
+        configure_spider_logging(self)
 
     def configure_sessions(self, manager):
         manager.add(
@@ -157,14 +160,15 @@ class LinkedInJobSpider(Spider):
             AsyncStealthySession(
                 cdp_url=self.cdp_url,
                 disable_resources=True,
-                timeout=60_000,
+                timeout=LINKEDIN_NAVIGATION_TIMEOUT_SECONDS * 1000,
+                retries=2,
                 retry_delay=LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
                 page_setup=self.setup_search_page,
             ),
         )
 
     async def setup_search_page(self, page):
-        await patch_no_load_wait(page)
+        await patch_no_load_wait(page, selector_readiness=True)
         self.diagnostics.reset()
         self.diagnostics.attach(page)
 
@@ -210,7 +214,7 @@ class LinkedInJobSpider(Spider):
                 self.diagnostics.reset()
                 stage = "reloading search"
                 try:
-                    await page.goto(target, wait_until="domcontentloaded", timeout=remaining_ms())
+                    await page.goto(target, wait_until="commit", timeout=remaining_ms())
                 except Exception as exc:
                     # A navigation timeout can leave a usable DOM. Spend only
                     # the remainder of this attempt's deadline checking it.
@@ -218,8 +222,15 @@ class LinkedInJobSpider(Spider):
                     self.diagnostics.navigation_error(exc)
                     logger.warning("[linkedin] Recovery navigation: %s", last_error)
             try:
+                if self._access_blocked(page, ""):
+                    stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
+                    break
                 stage = "waiting for job cards"
                 await page.wait_for_selector(self.sel["search"]["job_card"], timeout=remaining_ms())
+                # A redirect or access response may arrive while cards hydrate.
+                if self._access_blocked(page, ""):
+                    stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
+                    break
                 stage = "scrolling the results list"
                 pane = page.locator(self.sel["search"]["results_list"]).first
                 for _ in range(4):
@@ -253,46 +264,52 @@ class LinkedInJobSpider(Spider):
         )
 
     async def deep_scan_page(self, page):
+        from core import timing
+
         self._page_jobs = []
         self._detail_failures = {}
         self.health.check("search_fetch", True)
         found_at_least_one_duplicate = False
+        # Whole search page: hydration wait, scroll, card clicks, detail panels.
+        with timing.stage("linkedin", "search_page", lambda: {"new_jobs": len(self._page_jobs)}):
+            if not await self._wait_for_search(page):
+                return
 
-        if not await self._wait_for_search(page):
-            return
+            cards = await page.locator(self.sel["search"]["job_card"]).all()
+            card_ids = [(card, await card.get_attribute(self.sel["search"]["job_id_attr"]))
+                        for card in cards]
+            usable = sum(bool(key) for _, key in card_ids)
+            if not usable:
+                await self.health.page_failure("search_structure", f"Found {len(cards)} cards but no usable job IDs.", page)
+                self._repeat_found = True
+                return
+            self.health.check("search_structure", True)
+            known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
 
-        cards = await page.locator(self.sel["search"]["job_card"]).all()
-        card_ids = [(card, await card.get_attribute(self.sel["search"]["job_id_attr"]))
-                    for card in cards]
-        usable = sum(bool(key) for _, key in card_ids)
-        if not usable:
-            await self.health.page_failure("search_structure", f"Found {len(cards)} cards but no usable job IDs.", page)
-            self._repeat_found = True
-            return
-        self.health.check("search_structure", True)
-        known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
+            jobs_to_scrape_now = []
+            for card, job_id in card_ids:
+                if not job_id:
+                    continue
 
-        jobs_to_scrape_now = []
-        for card, job_id in card_ids:
-            if not job_id:
-                continue
+                if str(job_id) in known_ids:
+                    found_at_least_one_duplicate = True
+                else:
+                    jobs_to_scrape_now.append((card, job_id))
 
-            if str(job_id) in known_ids:
-                found_at_least_one_duplicate = True
-            else:
-                jobs_to_scrape_now.append((card, job_id))
+            logger.info(
+                f"[info] Found {len(jobs_to_scrape_now)} new jobs and"
+                f" {len(cards) - len(jobs_to_scrape_now)} old jobs on this page."
+            )
 
-        logger.info(
-            f"[info] Found {len(jobs_to_scrape_now)} new jobs and"
-            f" {len(cards) - len(jobs_to_scrape_now)} old jobs on this page."
-        )
-
-        for card, job_id in jobs_to_scrape_now:
-            await asyncio.sleep(random.uniform(2.0, 4.0))  # human-like pause
-            job = await self._scrape_card(page, card, job_id)
-            if job:
-                self._page_jobs.append(job)
-                self.seen_ids.add(str(job_id))
+            for card, job_id in jobs_to_scrape_now:
+                pause = random.uniform(2.0, 4.0)  # human-like pause
+                timing.record("linkedin", "human_delay", pause, {"card": str(job_id)})
+                await asyncio.sleep(pause)
+                with timing.stage("linkedin", "detail_panel", {"job_id": str(job_id)}):
+                    job = await self._scrape_card(page, card, job_id)
+                if job:
+                    self._page_jobs.append(job)
+                    self.seen_ids.add(str(job_id))
 
         if jobs_to_scrape_now:
             failures = len(jobs_to_scrape_now) - len(self._page_jobs)

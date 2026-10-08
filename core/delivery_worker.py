@@ -3,12 +3,14 @@
 import argparse
 import fcntl
 import logging
+from datetime import datetime
 from pathlib import Path
 import signal
 import threading
+import time
 
 from config import DB_PATH, ENRICHMENT_ENABLED, CLASSIFIED_DELIVERY_ENABLED, DELIVERY_POLL_SECONDS
-from core import db, telegram
+from core import db, telegram, timing
 from core.classify import load_channels
 from core.log import setup_logging
 from core.wakeup import Wakeup
@@ -17,11 +19,31 @@ logger = logging.getLogger(__name__)
 
 
 def deliver_once(stop=None):
+    # Idle scans (every DELIVERY_POLL_SECONDS) record nothing: latency rows
+    # only for batches that actually carried messages, or the table fills
+    # with thousands of sent=0 measurements per day.
     db.touch_worker('delivery', 'delivering')
+    oldest = db.oldest_undelivered_ready_at()
+    start = time.monotonic()
     sent = telegram.notify_jobs(db.get_unnotified(), stop=stop,
-                               progress=lambda: db.touch_worker('delivery', 'delivering'))
+                                progress=lambda: db.touch_worker('delivery', 'delivering'))
+    elapsed = time.monotonic() - start
+    if sent:
+        timing.record('delivery', 'delivery_batch', elapsed, {'sent': sent})
+        _record_queue_delay(oldest)
     db.touch_worker('delivery', 'idle')
     return sent
+
+
+def _record_queue_delay(oldest):
+    """Time the head of the queue waited for Telegram since becoming ready."""
+    if not oldest:
+        return
+    try:
+        wait = (datetime.now() - datetime.fromisoformat(oldest)).total_seconds()
+    except ValueError:
+        return
+    timing.record('delivery', 'queue_delay', max(0, wait), None)
 
 
 def run_worker(stop, wakeup, once=False):

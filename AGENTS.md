@@ -307,3 +307,24 @@ Set dummy env before importing config in test scripts:
   `production-immediate-dispatch-20261004`. First live verification: cycle
   completed and its 4-job request started in the same recorded second; results
   saved 14 seconds later and all 4 delivered by the following second.
+
+## Latency, travel and budget lessons (2026-10-08)
+- Travel (laptop suspend/disconnect, Oct 7-8) stranded dead keep-alive sockets
+  in the enrichment worker's long-lived `requests.Session`: every cycle's
+  first classify attempt failed `ConnectionError`, the 2-min retry succeeded.
+  `Enricher` now discards pooled connections after any ConnectionError
+  (`_discard_pooled_connections`); timeouts keep their budget reservation (may
+  still be billed), connection-level failures release it. Previously every
+  failed attempt kept its ~$0.02 reservation and ~45 flaky attempts leaked
+  ~$0.95 of the $1 daily budget, deferring 200 jobs to midnight.
+- Latency instrumentation is mandatory infrastructure, not optional logging:
+  `core/timing.py` (`stage`/`timed`/`record`) writes one `latency_events` row
+  + one parseable `LATENCY source=.. stage=.. seconds=..` INFO line per stage
+  (chrome cold start, login/checkpoint, search pages, detail panels, human
+  delays, persist, enrichment/delivery queue pickup, classify request,
+  publish, delivery batch). Recording is best-effort and must never raise
+  into the pipeline. Aggregate with `scripts/report_latency.py` (stage
+  stats, saved->delivered per job via `jobs.notified_at`, scheduler-grid
+  boot delay); it has offline coverage in `scripts/verify_pipeline.py`.
+- Scraper logs persist in the volume now (`LOG_FILE=/data/logs/scraper.log`
+  on the one-shot service) so run history survives `docker start` cycles.

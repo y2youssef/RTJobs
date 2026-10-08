@@ -19,6 +19,9 @@ services:
       - TZ=${TZ:-Africa/Cairo}
       - HEADLESS=false
       - DATA_DIR=/data
+      # Scraper runs are one-shot (docker logs vanish with `docker start`
+      # cycles); keep full run logs in the volume next to the workers'.
+      - LOG_FILE=/data/logs/scraper.log
       - KILL_CHROME_ON_START=true
     volumes:
       - chrome_profile:/app/chromeprofile

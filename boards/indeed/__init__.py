@@ -19,7 +19,7 @@ from config import (
     INDEED_SEARCH_URL,
     KILL_CHROME_ON_START,
 )
-from core import db, telegram
+from core import db, telegram, timing
 from core.scrape_health import ScrapeHealth
 from core.browser import (
     chrome_session,
@@ -74,7 +74,8 @@ class IndeedBoard(JobBoard):
                 page_action=page_action,
             ) as session:
                 logger.info("[indeed] Opening search page (login check first)")
-                session.fetch(INDEED_SEARCH_URL, wait=5000)
+                with timing.stage("indeed", "login_check"):
+                    session.fetch(INDEED_SEARCH_URL, wait=5000)
 
             if not outcome["ok"]:
                 logger.info("[indeed] Login check failed — skipping scrape.")
@@ -82,7 +83,9 @@ class IndeedBoard(JobBoard):
                 return 0
 
             health = ScrapeHealth(self.name)
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+            with timing.stage(self.name, "scrape_spider",
+                              lambda: {"items": len(result["items"]), "status": health.status}):
+                result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
 
             if result["logged_out"]:
                 logger.info("[indeed] Session died mid-scrape — aborting.")

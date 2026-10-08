@@ -21,6 +21,10 @@ class EnrichmentError(RuntimeError):
         self.usage = usage or {}
 
 
+class OutputValidationError(EnrichmentError):
+    """A completed response needs correction, rather than provider backoff."""
+
+
 class Enricher:
     def __init__(self):
         folder = Path(MARKUP_DIR) / "enrichment"
@@ -35,6 +39,16 @@ class Enricher:
         self.context_length = None
 
     def close(self):
+        self.session.close()
+
+    def _discard_pooled_connections(self):
+        """Drop keep-alive sockets after a connection-level failure.
+
+        Host suspend/resume (laptop travel) strands dead sockets in the pool;
+        the next request would reuse one and fail again two minutes later.
+        Closing the session empties the adapters' pools; new connections are
+        created lazily, so the same session stays usable afterwards.
+        """
         self.session.close()
 
     def prepare(self, job: dict) -> tuple[dict, str]:
@@ -71,22 +85,28 @@ class Enricher:
         data["id"] = job["id"]
         return data, digest
 
-    def payload(self, data: dict | list[dict]) -> dict:
+    def payload(self, data: dict | list[dict], feedback: str = "") -> dict:
         jobs = [data] if isinstance(data, dict) else data
         if not jobs:
             raise EnrichmentError("An enrichment request must contain jobs")
         output_tokens = CLASSIFIER_MAX_OUTPUT_TOKENS * len(jobs)
         if self.max_completion_tokens:
             output_tokens = min(output_tokens, self.max_completion_tokens)
+        messages = [{"role": "system", "content": self.prompt},
+                    {"role": "user", "content": json.dumps({"jobs": jobs}, ensure_ascii=False)}]
+        if feedback:
+            messages.append({"role": "system", "content":
+                "The previous whole-batch response failed local validation: " + feedback +
+                "\nCorrect this issue and recheck every result against the schema and taxonomy. "
+                "Return all input job IDs exactly once. Do not omit jobs or invent missing evidence."})
         return {"model": CLASSIFIER_MODEL,
-                "messages": [{"role": "system", "content": self.prompt},
-                             {"role": "user", "content": json.dumps({"jobs": jobs}, ensure_ascii=False)}],
+                "messages": messages,
                 "max_tokens": output_tokens,
                 "provider": {"require_parameters": True},
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": "rtjobs_enrichment", "strict": True, "schema": self.schema}}}
 
-    def request_bound(self, data: dict | list[dict]) -> float:
+    def request_bound(self, data: dict | list[dict], feedback: str = "") -> float:
         """Conservative per-request reservation, using advertised model prices.
 
         UTF-8 bytes bound input tokens; doubling the estimate leaves room for
@@ -94,7 +114,11 @@ class Enricher:
         a timeout does not prove the provider did not perform billable work.
         """
         if self.pricing is None:
-            response = self.session.get(OPENROUTER_BASE_URL + "/models", timeout=CLASSIFIER_TIMEOUT_SECONDS)
+            try:
+                response = self.session.get(OPENROUTER_BASE_URL + "/models", timeout=CLASSIFIER_TIMEOUT_SECONDS)
+            except requests.ConnectionError:
+                self._discard_pooled_connections()
+                raise
             response.raise_for_status()
             model = next((m for m in response.json()["data"] if m["id"] == CLASSIFIER_MODEL), None)
             if not model:
@@ -110,7 +134,7 @@ class Enricher:
                         self.pricing[key] = max(self.pricing[key], float(tier[key]))
             if any(not math.isfinite(v) or v < 0 for v in self.pricing.values()):
                 raise EnrichmentError("Invalid provider pricing")
-        payload = self.payload(data)
+        payload = self.payload(data, feedback)
         input_bytes = len(json.dumps(payload, ensure_ascii=False).encode()) + 1024
         return 2 * (input_bytes * self.pricing["prompt"] +
                     payload["max_tokens"] * self.pricing["completion"] + self.pricing["request"])
@@ -120,18 +144,22 @@ class Enricher:
         results, usage = self.classify_batch([data])
         return results[0], usage
 
-    def classify_batch(self, data: list[dict]) -> tuple[list[dict], dict]:
+    def classify_batch(self, data: list[dict], feedback: str = "") -> tuple[list[dict], dict]:
         """One completion request for the complete supplied scrape batch."""
         if not OPENROUTER_API_KEY:
             raise EnrichmentError("OpenRouter API key is missing")
-        payload = self.payload(data)
+        payload = self.payload(data, feedback)
         if self.pricing:
             # Refuse routes charging above the prices used for the reservation.
             payload["provider"]["max_price"] = {"prompt": self.pricing["prompt"] * 1_000_000,
                                                   "completion": self.pricing["completion"] * 1_000_000}
-        response = self.session.post(OPENROUTER_BASE_URL + "/chat/completions",
-            headers={"Authorization": "Bearer " + OPENROUTER_API_KEY},
-            json=payload, timeout=CLASSIFIER_TIMEOUT_SECONDS)
+        try:
+            response = self.session.post(OPENROUTER_BASE_URL + "/chat/completions",
+                headers={"Authorization": "Bearer " + OPENROUTER_API_KEY},
+                json=payload, timeout=CLASSIFIER_TIMEOUT_SECONDS)
+        except requests.ConnectionError:
+            self._discard_pooled_connections()
+            raise
         if not response.ok:
             raise EnrichmentError(f"OpenRouter HTTP {response.status_code}", response.status_code)
         usage = {}
@@ -140,16 +168,30 @@ class Enricher:
             usage = envelope.get("usage") or {}
             choice = envelope["choices"][0]
             if choice.get("finish_reason") != "stop":
-                raise EnrichmentError("Whole-batch output did not finish normally; no results accepted", usage=usage)
+                raise OutputValidationError("Invalid enrichment: whole-batch output did not finish normally; no results accepted", usage=usage)
             batch = json.loads(choice["message"]["content"])
             results = self.validate_batch(batch, [job["id"] for job in data])
             return results, usage
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise EnrichmentError(f"Invalid enrichment: {exc}", usage=usage) from exc
+            # JSON decoder errors describe positions; validation errors contain
+            # only schema paths, trusted input IDs and canonical enum values.
+            raise OutputValidationError(f"Invalid enrichment: {exc}", usage=usage) from exc
 
     def validate(self, result: dict, job_id: int):
         """Reject invalid output without rewriting evidence or inferred seniority."""
-        _validate(result, self.result_schema)
+        # Diagnose the exact pair before the schema's anyOf rejects it. Never
+        # echo arbitrary model strings into logs or subsequent system messages.
+        classification = result.get("classification") if isinstance(result, dict) else None
+        if isinstance(classification, dict):
+            family, specialization = classification.get("job_family"), classification.get("specialization")
+            if isinstance(family, str) and family in self.taxonomy["specializations"]:
+                allowed = self.taxonomy["specializations"][family]
+                if specialization not in allowed:
+                    known = {s for values in self.taxonomy["specializations"].values() for s in values}
+                    received = specialization if isinstance(specialization, str) and specialization in known else "<invalid category>"
+                    raise ValueError(f"job_id={job_id}: classification.specialization={received} "
+                                     f"does not belong to {family}; allowed={','.join(allowed)}")
+        _validate(result, self.result_schema, path=f"job_id={job_id}", root=self.schema)
         if result["job_id"] != job_id:
             raise ValueError("Mismatched job_id")
         classification = result["classification"]
@@ -171,8 +213,11 @@ class Enricher:
 
     def validate_batch(self, batch: dict, job_ids: list[int]) -> list[dict]:
         """Check cardinality and identity before accepting any member of a batch."""
-        _validate(batch, self.schema)
+        if not isinstance(batch, dict) or set(batch) != {"jobs"} or not isinstance(batch["jobs"], list):
+            raise ValueError("Batch must contain exactly a jobs array")
         results = batch["jobs"]
+        if any(not isinstance(row, dict) or type(row.get("job_id")) is not int for row in results):
+            raise ValueError("Every result must contain an integer job_id")
         ids = [row["job_id"] for row in results]
         if len(set(job_ids)) != len(job_ids) or len(ids) != len(job_ids) or set(ids) != set(job_ids):
             raise ValueError("Missing, duplicate or unexpected job IDs in batch")
@@ -183,6 +228,10 @@ class Enricher:
 
     def fallback(self, job_id: int) -> dict:
         def empty(schema):
+            if "$ref" in schema:
+                return empty(self.schema["$defs"][schema["$ref"].removeprefix("#/$defs/")])
+            if "anyOf" in schema:
+                return empty(schema["anyOf"][0])
             kind = schema["type"]
             if kind == "object":
                 return {key: empty(value) for key, value in schema["properties"].items()}
@@ -199,8 +248,19 @@ class Enricher:
         return result
 
 
-def _validate(value, schema: dict, path: str = "result"):
+def _validate(value, schema: dict, path: str = "result", root: dict | None = None):
     """Validate the restricted JSON Schema vocabulary used by our schema."""
+    root = schema if root is None else root
+    if "$ref" in schema:
+        return _validate(value, root["$defs"][schema["$ref"].removeprefix("#/$defs/")], path, root)
+    if "anyOf" in schema:
+        for option in schema["anyOf"]:
+            try:
+                _validate(value, option, path, root)
+                return
+            except ValueError:
+                pass
+        raise ValueError(f"{path}: no allowed schema variant")
     kinds = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
     actual = ("null" if value is None else "boolean" if isinstance(value, bool) else
               "integer" if isinstance(value, int) else "number" if isinstance(value, float) else
@@ -213,11 +273,11 @@ def _validate(value, schema: dict, path: str = "result"):
     if actual == "object":
         if set(value) != set(schema["properties"]):
             raise ValueError(f"{path}: missing or extra fields")
-        for key, child in value.items():
-            _validate(child, schema["properties"][key], path + "." + key)
+        for key, child_schema in schema["properties"].items():
+            _validate(value[key], child_schema, path + "." + key, root)
     elif actual == "array":
         for item in value:
-            _validate(item, schema["items"], path + "[]")
+            _validate(item, schema["items"], path + "[]", root)
     elif actual in ("number", "integer"):
         if not math.isfinite(value) or value < schema.get("minimum", -math.inf):
             raise ValueError(f"{path}: invalid number")

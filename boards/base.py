@@ -16,7 +16,7 @@ def persist_jobs(source: str, items: list[dict]) -> int:
     Returns new_count. Blocked jobs are marked seen so they
     are never re-scraped, but never saved/notified. Shared by all boards.
     """
-    from core import blocklist, db
+    from core import blocklist, db, timing
 
     accepted = []
     blocked = []
@@ -27,7 +27,8 @@ def persist_jobs(source: str, items: list[dict]) -> int:
             blocked_names.append(job.get("company") or "?")
             continue
         accepted.append(job)
-    new_count = db.save_jobs(accepted, blocked)
+    with timing.stage(source, "persist_jobs", lambda: {"new": new_count, "blocked": len(blocked)}):
+        new_count = db.save_jobs(accepted, blocked)
     if blocked_names:
         logger.info(
             f"[{source}] Filtered out {len(blocked_names)} blocked-company"

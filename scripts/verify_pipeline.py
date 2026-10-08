@@ -110,6 +110,38 @@ def main():
             db.set_pipeline_state('classifier', {})
             print('PASS cycle separation, interrupted-cycle recovery, persistent provider pause and budget deferral')
 
+            # Connection-level failures (host suspend/travel drops keep-alive
+            # sockets) release their whole reservation: repeated offline
+            # attempts must never exhaust the daily budget.
+            cycle_off = db.start_scrape_batch(); save(4, 'offline'); db.finish_scrape_batch(cycle_off)
+            with db.get_db() as conn:
+                offline_jobs = [dict(row) for row in conn.execute(
+                    "SELECT j.*,e.attempts,e.batch_id,e.error FROM job_enrichments e "
+                    "JOIN jobs j ON j.id=e.job_id WHERE e.state='pending' AND e.batch_id=?", (cycle_off,)).fetchall()]
+            assert len(offline_jobs) == 4
+            with db.get_db() as conn:
+                before = conn.execute('SELECT amount FROM enrichment_spend').fetchone()[0]
+            for attempt in range(3):
+                db.set_pipeline_state('classifier', {})
+                with patch.object(client, 'request_bound', return_value=.5), \
+                     patch.object(client.session, 'post', side_effect=requests.ConnectionError('dropped keep-alive')), \
+                     patch.object(client.session, 'close') as discarded:
+                    failed = worker.process_batch(client, offline_jobs)
+                assert all(row['state'] == 'pending' for row in failed['jobs'])
+                assert discarded.called, 'Stale keep-alive pool must be discarded after a connection failure'
+            with db.get_db() as conn:
+                leaked = conn.execute('SELECT amount FROM enrichment_spend').fetchone()[0]
+            assert abs(leaked - before) < 1e-8, f'Offline retries leaked budget: {before} -> {leaked}'
+            db.set_pipeline_state('classifier', {})
+            with patch.object(client, 'request_bound', return_value=.5), patch.object(client.session, 'post',
+                    side_effect=lambda _u, **kw: response(output(json.loads(kw['json']['messages'][1]['content'])['jobs']))):
+                recovered = worker.process_batch(client, offline_jobs)
+            assert all(row['state'] == 'ready' for row in recovered['jobs'])
+            with db.get_db() as conn:
+                after = conn.execute('SELECT amount FROM enrichment_spend').fetchone()[0]
+            assert abs(after - (before + .01)) < 1e-8, f'Recovery spend wrong: {after} != {before}+.01'
+            print('PASS connection-level failures release reservations; recovery classifies the offline backlog')
+
             # Delivery can commit while a model request is actively blocked.
             entered, release = threading.Event(), threading.Event()
             result_box = []
@@ -148,6 +180,27 @@ def main():
             db.finish_enrichment(ids[0], client.fallback(ids[0]), 'real-other', 'model', client.version)
             assert any(row['id'] == ids[0] and row['job_family'] == 'other' for row in db.get_unnotified())
             print('PASS migration preserves delivered history and distinguishes genuine Other from provider failure')
+
+            # Every latency stage leaves a measurable row; metrics never break the pipeline.
+            sys.path.insert(0, str(ROOT / 'scripts'))
+            import report_latency
+            from core import timing
+            with db.get_db() as conn:
+                db.record_latency('test', 'search_page', 1.5, {'new_jobs': 2})
+                stages = report_latency.stage_summary(conn, (datetime.now() - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S'))
+                assert 'enrichment/classify_request' in stages and 'enrichment/publish' in stages
+                assert 'test/search_page' in stages and stages['test/search_page'] == [1.5]
+                assert report_latency.cycle_totals(conn, '2999-01-01 00:00:00') == []
+                assert report_latency.end_to_end(conn, '2999-01-01 00:00:00') == {}
+            with patch.object(db, 'record_latency', side_effect=RuntimeError('metrics DB down')):
+                timing.record('test', 'broken_sink', 0.1)  # must never raise
+            with timing.stage('test', 'measured_stage', {'ok': True}):
+                pass
+            with db.get_db() as conn:
+                rows = conn.execute("SELECT source, seconds, detail FROM latency_events WHERE stage='measured_stage'").fetchall()
+                assert len(rows) == 1 and rows[0][0] == 'test' and rows[0][1] >= 0
+                assert json.loads(rows[0][2]) == {'ok': True}
+            print('PASS latency stages are recorded, aggregated and never break the pipeline')
 
             now = datetime.now(); later = now + timedelta(seconds=config.PIPELINE_ALERT_RETRY_SECONDS + 1)
             with patch.object(telegram, 'notify_failure', side_effect=[False, True, True]) as alert:
