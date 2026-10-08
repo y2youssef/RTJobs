@@ -449,9 +449,7 @@ def verify(directory):
                     health.check("search_fetch", True)
                     health.check("search_structure", healthy, "Simulated incomplete page")
                     items = [dict(base, source=cls.name, external_id="status-test-" + str(healthy))]
-                    if cls.name == "wuzzuf":
-                        return items
-                    return {"items": items, "login_redirect": False, "logged_out": False, "blocked": False}
+                    return {"items": items, "listings": {}, "login_redirect": False, "logged_out": False, "blocked": False}
                 with ExitStack() as case:
                     case.enter_context(patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("unused")))
                     case.enter_context(patch.object(module.scraper, "scrape", side_effect=fake_scrape))
@@ -468,6 +466,84 @@ def verify(directory):
     verify_linkedin_login()
     verify_first_page_and_schedule()
     verify_browser_launch()
+    verify_reposts()
+
+
+def verify_reposts():
+    """Same board ID with a fresh listing = repost: always recorded, re-sent
+    (tagged) only after the 7-day cooldown, classified first when needed."""
+    from datetime import datetime, timedelta
+    from config import ENRICHMENT_SCHEMA_VERSION
+    from core import clock, db, telegram
+    from boards.base import load_board_selectors
+    from boards.indeed import scraper as indeed
+    from boards.linkedin import scraper as li
+    from boards.wuzzuf import scraper as wu
+
+    def wall(**delta):
+        return (datetime.now() - timedelta(**delta)).strftime("%Y-%m-%d %H:%M")
+    base = {"source": "linkedin", "title": "Road Logistics Operational Care Specialist", "company": "Kuehne+Nagel",
+            "description": "Logistics operations.", "link": "https://www.linkedin.com/jobs/view/1/", "extra": {}}
+    db.save_jobs([dict(base, external_id=key, posted_at=wall(days=22))
+                  for key in ("repost-legacy", "repost-recent", "repost-ready")], enqueue=False)
+    with db.get_db() as conn:
+        ids = dict(conn.execute("SELECT external_id, id FROM jobs WHERE external_id LIKE 'repost-%'").fetchall())
+        conn.execute("UPDATE jobs SET notified=1, notified_at=NULL WHERE id=?", (ids["repost-legacy"],))
+        conn.execute("UPDATE jobs SET notified=1, notified_at=? WHERE id=?", (clock.after(-2 * 86400), ids["repost-recent"]))
+        conn.execute("UPDATE jobs SET notified=1, notified_at=?, destination_chat_id='-1009' WHERE id=?",
+                     (clock.after(-20 * 86400), ids["repost-ready"]))
+        conn.execute("INSERT INTO job_enrichments (job_id, state, schema_version, job_family, result_json, updated_at, created_at)"
+                     " VALUES (?, 'ready', ?, 'supply_chain_procurement_logistics', '{}', '2026-09-16 10:00:00', '2026-09-16 10:00:00')",
+                     (ids["repost-ready"], ENRICHMENT_SCHEMA_VERSION))
+    fresh = wall(minutes=6)
+    report = db.record_listings("linkedin", {"repost-legacy": fresh, "repost-recent": fresh,
+                                             "repost-ready": fresh, "never-saved": fresh})
+    assert report["reposts"] == 3 and sorted(report["requeued"]) == sorted([ids["repost-legacy"], ids["repost-ready"]])
+    with db.get_db() as conn:
+        legacy = conn.execute("SELECT notified, reposted_at, destination_chat_id FROM jobs WHERE id=?", (ids["repost-legacy"],)).fetchone()
+        assert legacy[0] == 0 and legacy[1] == fresh and legacy[2] is None
+        # Unclassified (pre-classifier) reposts are classified before delivery.
+        assert conn.execute("SELECT state FROM job_enrichments WHERE job_id=?", (ids["repost-legacy"],)).fetchone()[0] == "pending"
+        assert tuple(conn.execute("SELECT notified, reposted_at FROM jobs WHERE id=?", (ids["repost-recent"],)).fetchone()) == (1, None)
+        events = dict(conn.execute("SELECT job_id, redelivered FROM job_reposts").fetchall())
+        assert events == {ids["repost-legacy"]: 1, ids["repost-recent"]: 0, ids["repost-ready"]: 1}
+        assert conn.execute("SELECT updated_at FROM job_enrichments WHERE job_id=?", (ids["repost-ready"],)).fetchone()[0] > "2026-10-01"
+    # The same repost on the next runs, stale listings and unknown IDs are not new reposts.
+    assert db.record_listings("linkedin", {"repost-legacy": wall(minutes=3), "repost-ready": wall(minutes=1)})["reposts"] == 0
+    assert db.record_listings("linkedin", {"repost-recent": wall(days=3)})["reposts"] == 0
+
+    # A re-sent repost carries the tag and its first-seen date.
+    rows = [row for row in db.get_unnotified(limit=1000) if row["id"] == ids["repost-ready"]]
+    assert rows, "a classified repost must be immediately deliverable"
+    with patch.object(telegram, "_send", return_value=True) as send, patch.object(telegram.time, "sleep"), \
+            patch("core.classify.load_channels", return_value={}):
+        assert telegram.notify_jobs(rows) == 1
+    assert "🔁" in send.call_args.args[1] and "first seen" in send.call_args.kwargs["plain"]
+    assert f"Reposted {fresh}" in send.call_args.kwargs["plain"]
+
+    # Boards report listing times for KNOWN cards only, without fallbacks.
+    assert li._listed_at(" 6 minutes ago ") and li._listed_at("1 hour ago")
+    assert li._listed_at("3 days ago") is None and li._listed_at("") is None
+    class TimedCards:
+        async def evaluate_all(self, script, arg): return [["1", "6 minutes ago"], ["2", "2 weeks ago"], ["3", "5 minutes ago"]]
+    class TimedPage:
+        def locator(self, css): return TimedCards()
+    spider = li.LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+    assert set(asyncio.run(spider._known_listings(TimedPage(), {"1", "2"}))) == {"1"}
+    raw = (ROOT / "markup/wuzzuf/wazzuf_guide.txt").read_text()
+    html = raw[raw.find("<!DOCTYPE"):]
+    sel, entities = load_board_selectors("wuzzuf"), wu._extract_state(html)
+    first, _ = wu._extract_jobs(html, sel, set(), entities)
+    listings = {}
+    jobs, duplicate = wu._extract_jobs(html, sel, {j["external_id"] for j in first}, entities, listings=listings)
+    assert not jobs and duplicate and listings == {j["external_id"]: j["posted_at"] for j in first}
+    search = (ROOT / "markup/indeed/first_page.html").read_text()
+    fresh_cards, _, _ = indeed._extract_jobs(search, set())
+    listings = {}
+    jobs, seen, missing = indeed._extract_jobs(search, {j["external_id"] for j in fresh_cards}, listings=listings)
+    assert not jobs and seen == len(fresh_cards) and listings
+    assert all(listings[key] == next(j["posted_at"] for j in fresh_cards if j["external_id"] == key) for key in listings)
+    print("PASS reposts: fresh listing of a known ID recorded, re-sent after the cooldown (classified first), tagged; all boards report listing times")
 
 
 def verify_browser_launch():

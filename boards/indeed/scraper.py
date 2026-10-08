@@ -107,16 +107,27 @@ def _parse_pubdate(value) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def _created_at(value) -> str | None:
+    """Exact createDate (unix ms) as local wall time, else None (no fallback)."""
+    try:
+        return datetime.fromtimestamp(int(value) / 1000).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
 def _jobkey_from_url(url: str) -> str:
     m = re.search(r"[?&]jk=([^&]+)", url or "")
     return m.group(1) if m else ""
 
 
-def _extract_jobs(html: str, seen_ids: set, lookup_seen: bool = False) -> tuple[list, int, bool]:
+def _extract_jobs(html: str, seen_ids: set, lookup_seen: bool = False,
+                  listings: dict | None = None) -> tuple[list, int, bool]:
     """Parse the search-page job cards blob.
 
     Returns (new_jobs, seen_count, blob_missing). `blob_missing` is True
     when the cards JSON was absent (CF challenge page, empty page, redesign).
+    `listings` collects the createDate of already-known cards for repost
+    detection (core/db.record_listings).
     """
     data = _extract_balanced_json(html, _CARDS_MARKER)
     if not data:
@@ -139,6 +150,9 @@ def _extract_jobs(html: str, seen_ids: set, lookup_seen: bool = False) -> tuple[
             continue
         if str(key) in seen_ids:
             seen += 1
+            listed = _created_at(item.get("createDate")) if listings is not None else None
+            if listed:
+                listings[str(key)] = listed
             continue
 
         company = item.get("company") or ""
@@ -373,6 +387,7 @@ class IndeedJobSpider(Spider):
         self._detail_jobs: dict[str, dict] = {}  # jobkey -> enriched job
         self._queued: set[str] = set()
         self._detail_snapshots = 0
+        self.listings: dict[str, str] = {}  # known jobkey -> current createDate
         # Safety-net flags for the board: logged-out mid-scrape (auth
         # redirect) or a CF/WAF block page instead of the search page.
         self._logged_out = False
@@ -453,7 +468,7 @@ class IndeedJobSpider(Spider):
             self._blocked = True
             return
 
-        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids, lookup_seen=True)
+        jobs, seen, blob_missing = _extract_jobs(html, self.seen_ids, lookup_seen=True, listings=self.listings)
         self.health.check("search_structure", not blob_missing,
                           "The mosaic jobcards JSON or its results array is missing/unparseable.", html)
         if not blob_missing:
@@ -570,6 +585,7 @@ def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) ->
     )
     return {
         "items": items,
+        "listings": getattr(spider, "listings", {}),
         "logged_out": spider._logged_out,
         "blocked": spider._blocked,
     }

@@ -67,4 +67,4 @@ class IndeedBoard(JobBoard):
             return 0
 
         login.clear_episode_flags()
-        return self.finish_scrape(record, health, result["items"])
+        return self.finish_scrape(record, health, result["items"], result.get("listings"))

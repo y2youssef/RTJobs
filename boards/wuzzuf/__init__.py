@@ -25,6 +25,6 @@ class WuzzufBoard(JobBoard):
     def scrape(self, cdp: str, record) -> int:
         health = ScrapeHealth(self.name)
         with timing.stage(self.name, "scrape_spider",
-                          lambda: {"items": len(items), "status": health.status}):
-            items = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
-        return self.finish_scrape(record, health, items)
+                          lambda: {"items": len(result["items"]), "status": health.status}):
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+        return self.finish_scrape(record, health, result["items"], result.get("listings"))

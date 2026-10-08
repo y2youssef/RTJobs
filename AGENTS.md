@@ -245,6 +245,13 @@ Set dummy env before importing config in test scripts:
 ## Conventions
 - Selectors: ALWAYS in `markup/<site>/selectors.json`, loaded via
   `load_board_selectors(site)`; missing file = fail loudly at startup.
+- Reposts (core/db.record_listings): employers refresh old listings and they keep
+  their board job ID, so ID dedupe alone hides them. Boards report the current
+  listing time of KNOWN cards (LinkedIn card "N minutes/hours ago", Wuzzuf SSR
+  postedAt, Indeed createDate). >= REPOST_MIN_GAP_HOURS (24) newer than stored
+  = repost, always recorded in `job_reposts`; re-sent with a 🔁 tag only when
+  the last delivery is > REPOST_REDELIVER_AFTER_DAYS (7) old (classified in the
+  cycle first if it has no current result). Latency reports exclude reposts.
 - Company blocklist: `markup/blocked_companies.json` (bind-mounted, so
   live-editable without rebuild). Keyed by source + `"*"` for all sources;
   case-insensitive substring match (`core/blocklist.py`). Blocked jobs are

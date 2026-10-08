@@ -156,6 +156,17 @@ LOGIN_COOLDOWN_SECONDS = [5 * 60, 15 * 60, 30 * 60]
 # ---------------------------------------------------------------------------
 MAX_SNAPSHOTS_PER_KIND = int(os.environ.get("MAX_SNAPSHOTS_PER_KIND", "20"))
 
+# ---------------------------------------------------------------------------
+# Reposts: an employer refreshing an old listing keeps its job ID, so dedupe
+# hides it. A known job whose board listing time is REPOST_MIN_GAP_HOURS newer
+# than what we stored is a repost; it is re-sent (tagged) only when our last
+# delivery is older than REPOST_REDELIVER_AFTER_DAYS. Every repost is recorded.
+# ---------------------------------------------------------------------------
+REPOST_MIN_GAP_HOURS = int(os.environ.get("REPOST_MIN_GAP_HOURS", "24"))
+REPOST_REDELIVER_AFTER_DAYS = int(os.environ.get("REPOST_REDELIVER_AFTER_DAYS", "7"))
+if REPOST_MIN_GAP_HOURS < 1 or REPOST_REDELIVER_AFTER_DAYS < 0:
+    raise ValueError("REPOST_MIN_GAP_HOURS must be >= 1 and REPOST_REDELIVER_AFTER_DAYS >= 0")
+
 # Enrichment is staged separately from scraping. Enable after reviewing a
 # dry run; the existing single-channel delivery remains the default.
 ENRICHMENT_ENABLED = os.environ.get("ENRICHMENT_ENABLED", "false").lower() == "true"

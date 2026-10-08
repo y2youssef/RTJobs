@@ -50,6 +50,21 @@ _TIME_DELTAS = {
 }
 
 
+_FRESH_AGE = re.compile(r"(\d+)\s+(minute|hour)s?\s+ago")
+
+
+def _listed_at(text: str) -> str | None:
+    """A card's "N minutes/hours ago" as local wall time, else None.
+
+    Repost detection only: a repost is fresh, and day/week ages are too coarse
+    to compare with the stored posting time. No fallback to "now"."""
+    match = _FRESH_AGE.search(text or "")
+    if not match:
+        return None
+    value, unit = int(match.group(1)), match.group(2)
+    return (datetime.now() - _TIME_DELTAS[unit](value)).strftime("%Y-%m-%d %H:%M")
+
+
 def _parse_linkedin_time(time_str: str) -> str:
     if not time_str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -152,6 +167,7 @@ class LinkedInJobSpider(Spider):
         self.seen_ids: set[str] = set()  # IDs discovered during this run only
 
         self._page_jobs: list[dict] = []
+        self.listings: dict[str, str] = {}  # known job id -> current listing time
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -294,7 +310,9 @@ class LinkedInJobSpider(Spider):
             self.health.check("card_ids", usable == len(cards),
                               f"{len(cards) - usable} of {len(cards)} search cards had no job ID and were "
                               "skipped (layout change or non-job list items).")
-            known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
+            stored_ids = db.seen_ids_for("linkedin", (key for _, key in card_ids))
+            known_ids = self.seen_ids | stored_ids
+            self.listings.update(await self._known_listings(page, stored_ids))
 
             # Every unknown card on the page, wherever it sits: promoted or
             # reposted old cards never hide newer ones (no pagination).
@@ -335,6 +353,28 @@ class LinkedInJobSpider(Spider):
             html = await page.content()
             kind = "search_redirect" if self._login_redirect else "search_empty"
             markup.save_snapshot("linkedin", kind, html)
+
+    async def _known_listings(self, page, known: set[str]) -> dict[str, str]:
+        """Current listing time of already-known cards, for repost detection.
+
+        One evaluate call reads every card's "N minutes ago" (a repost shows
+        its new time there). Never fails the scan; occluded cards without a
+        rendered time are simply skipped.
+        """
+        try:
+            pairs = await page.locator(self.sel["search"]["job_card"]).evaluate_all(
+                "(cards, [attr, timeCss]) => cards.map(card => [card.getAttribute(attr),"
+                " (card.querySelector(timeCss) || {}).textContent || ''])",
+                [self.sel["search"]["job_id_attr"], self.sel["search"]["card_listed"]])
+        except Exception as exc:
+            logger.debug("[linkedin] Card listing times unavailable: %s", type(exc).__name__)
+            return {}
+        listings = {}
+        for job_id, text in pairs or []:
+            listed = _listed_at(text) if job_id and str(job_id) in known else None
+            if listed:
+                listings[str(job_id)] = listed
+        return listings
 
     async def _settled_cards(self, page):
         """Card locators once the list is complete: 25 cards, or a count that
@@ -559,4 +599,4 @@ def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) ->
     logger.info(
         f"[spider] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return {"items": items, "login_redirect": spider._login_redirect}
+    return {"items": items, "login_redirect": spider._login_redirect, "listings": spider.listings}

@@ -11,11 +11,13 @@ from core.browser import chrome_session, install_cdp_default_context_patch
 logger = logging.getLogger(__name__)
 
 
-def persist_jobs(source: str, items: list[dict]) -> int:
+def persist_jobs(source: str, items: list[dict], listings: dict[str, str] | None = None) -> int:
     """Save jobs with blocklist filtering and optional enrichment queuing.
 
     Returns new_count. Blocked jobs are marked seen so they
     are never re-scraped, but never saved/notified. Shared by all boards.
+    `listings` (external_id -> current listing time of already-known cards)
+    feeds repost detection (core/db.record_listings).
     """
     from core import blocklist, db, timing
 
@@ -36,6 +38,11 @@ def persist_jobs(source: str, items: list[dict]) -> int:
             f" job(s): {', '.join(sorted(set(blocked_names)))}"
         )
     logger.info(f"[{source}] Saved {new_count} new job(s)")
+    if listings:
+        reposts = db.record_listings(source, listings)
+        if reposts["reposts"]:
+            logger.info(f"[{source}] Reposts detected: {reposts['reposts']}; "
+                        f"re-sending {len(reposts['requeued'])} (last delivered over the cooldown ago)")
 
     # Notification happens after Chrome closes (main.py), or in the separate
     # enrichment worker. No network waits inside the browser's lifetime here.
@@ -129,8 +136,9 @@ class JobBoard(ABC):
     def scrape(self, cdp: str, record: RunRecord) -> int:
         """Board-specific work against the running Chrome; finish `record`."""
 
-    def finish_scrape(self, record: RunRecord, health, items: list[dict]) -> int:
+    def finish_scrape(self, record: RunRecord, health, items: list[dict],
+                      listings: dict[str, str] | None = None) -> int:
         """Persist the scraped jobs and close the run with the health status."""
-        new_count = persist_jobs(self.name, items)
+        new_count = persist_jobs(self.name, items, listings)
         record.finish(health.status, jobs_found=new_count, error=health.error)
         return new_count

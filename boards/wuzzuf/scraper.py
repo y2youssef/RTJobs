@@ -181,11 +181,13 @@ def _enrich(job: dict, entity: dict) -> dict:
 
 
 def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None,
-                  lookup_seen: bool = False) -> tuple[list, bool]:
+                  lookup_seen: bool = False, listings: dict | None = None) -> tuple[list, bool]:
     """Parse one SSR search page. Returns (jobs, found_duplicate).
 
     DOM gives the card order + job ids; the optional `entities` dict (from
     the window.Wuzzuf SSR state) enriches each job with the full payload.
+    `listings` collects the exact SSR postedAt of already-known cards for
+    repost detection (core/db.record_listings).
     """
     sel = Selector(html)
     cards = [
@@ -218,6 +220,11 @@ def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None,
 
         if job_id in seen_ids:
             found_duplicate = True
+            if listings is not None:
+                attrs = (by_id.get(job_id) or {}).get("attributes") or {}
+                listed = _parse_state_timestamp(attrs.get("postedAt"))
+                if listed:
+                    listings[job_id] = listed
             continue
 
         company = card.css(selectors["search"]["company"])
@@ -261,6 +268,7 @@ class WuzzufJobSpider(Spider):
         self.cdp_url = cdp_url
         self.seen_ids: set[str] = set()  # IDs discovered during this run only
         self._page_jobs: list[dict] = []
+        self.listings: dict[str, str] = {}  # known job id -> current postedAt
         self.health = ScrapeHealth("wuzzuf")
         super().__init__(*args, **kwargs)
         from core.log import configure_spider_logging
@@ -302,7 +310,7 @@ class WuzzufJobSpider(Spider):
         html = await page.content()
         entities = _extract_state(html)
         jobs, found_duplicate = _extract_jobs(
-            html, self.sel, self.seen_ids, entities, lookup_seen=True
+            html, self.sel, self.seen_ids, entities, lookup_seen=True, listings=self.listings
         )
         self.health.check("search_structure", bool(jobs or found_duplicate),
                           "Job links appeared, but no new or known cards could be parsed.", html)
@@ -338,8 +346,8 @@ class WuzzufJobSpider(Spider):
             yield job
 
 
-def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> list[dict]:
-    """Run the spider and return the scraped job dicts."""
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:
+    """Run the spider. Returns {'items': [...], 'listings': {known id: postedAt}}."""
     spider = WuzzufJobSpider(selectors=selectors, cdp_url=cdp_url)
     if health is not None:
         spider.health = health
@@ -349,4 +357,4 @@ def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) ->
     logger.info(
         f"[wuzzuf] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return items
+    return {"items": items, "listings": spider.listings}

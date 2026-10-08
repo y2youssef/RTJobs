@@ -14,7 +14,8 @@
     "results_list": ".jobs-search-results-list, .scaffold-layout__list",
     "detail_panel": "#job-details",
     "login_redirect": "input#username",
-    "card_company": ".artdeco-entity-lockup__subtitle"
+    "card_company": ".artdeco-entity-lockup__subtitle",
+    "card_listed": "time"
   },
   "job_detail": {
     "panel": ".job-view-layout",

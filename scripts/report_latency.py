@@ -59,7 +59,9 @@ def end_to_end(conn: sqlite3.Connection, since: str) -> dict[str, list[float]]:
     """Per-source saved -> delivered seconds for jobs notified since `since`."""
     rows = conn.execute(
         "SELECT source, scraped_at, notified_at FROM jobs "
-        "WHERE notified=1 AND notified_at <> '' AND scraped_at <> '' AND notified_at >= ?", (since,)).fetchall()
+        "WHERE notified=1 AND notified_at <> '' AND scraped_at <> '' AND notified_at >= ?"
+        # A re-sent repost was first scraped weeks earlier; it is not latency.
+        " AND reposted_at IS NULL", (since,)).fetchall()
     groups: dict[str, list[float]] = {}
     for source, scraped_at, notified_at in rows:
         try:

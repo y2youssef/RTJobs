@@ -3,9 +3,11 @@
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, ENRICHMENT_SCHEMA_VERSION,
-                    NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT, CLASSIFIER_RETRY_MAX_SECONDS)
+                    NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT, CLASSIFIER_RETRY_MAX_SECONDS,
+                    REPOST_MIN_GAP_HOURS, REPOST_REDELIVER_AFTER_DAYS)
 from core import clock, wakeup
 
 _active_scrape_batch = None  # Set only by this process's orchestrator.
@@ -132,6 +134,16 @@ CREATE TABLE IF NOT EXISTS latency_events (
     detail      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_latency_stage ON latency_events(stage, recorded_at);
+-- One row per detected repost (same board job ID, fresh listing time).
+-- listed_at is board-local wall time like jobs.posted_at; detected_at is UTC.
+CREATE TABLE IF NOT EXISTS job_reposts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id),
+    listed_at   TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    redelivered INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_reposts_job ON job_reposts(job_id, listed_at);
 """
 
 
@@ -192,6 +204,8 @@ def init_db():
             "next_notify_at": "TEXT NOT NULL DEFAULT ''",
             "destination_chat_id": "TEXT",
             "notified_at": "TEXT",
+            # Listing time of the repost being (re)delivered; NULL = original.
+            "reposted_at": "TEXT",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
@@ -315,6 +329,76 @@ def seen_ids_for(source: str, external_ids) -> set[str]:
     return found
 
 
+def _wall_time(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def record_listings(source: str, listings: dict[str, str]) -> dict:
+    """Detect reposts among already-saved jobs from their current listing times.
+
+    `listings` maps external_id -> the board's listing time (local wall time,
+    the posted_at format) for cards the board already knew. A listing at least
+    REPOST_MIN_GAP_HOURS newer than the stored posted_at and the last recorded
+    repost is a repost: the employer refreshed the job and it kept its ID. It
+    is always recorded in job_reposts; it is re-sent only when our last
+    delivery is older than REPOST_REDELIVER_AFTER_DAYS (legacy deliveries
+    without notified_at count as old). Re-sending resets delivery, clears the
+    frozen destination so it routes by its current family, and queues
+    classification inside this scrape cycle when there is no current result.
+    """
+    report = {"reposts": 0, "requeued": []}
+    if not listings:
+        return report
+    gap = timedelta(hours=REPOST_MIN_GAP_HOURS)
+    fresh_after = datetime.now() - timedelta(days=2)  # wall time, like listings
+    delivered_before = clock.utcnow() - timedelta(days=REPOST_REDELIVER_AFTER_DAYS)
+    ids = list(dict.fromkeys(str(key) for key in listings))
+    with get_db() as conn:
+        rows = []
+        for offset in range(0, len(ids), 200):
+            batch = ids[offset:offset + 200]
+            rows += conn.execute(
+                "SELECT j.id, j.external_id, j.posted_at, j.notified, j.notified_at,"
+                " (SELECT MAX(listed_at) FROM job_reposts r WHERE r.job_id = j.id) AS last_repost,"
+                " e.job_id AS enrichment_id, e.state, e.schema_version"
+                " FROM jobs j LEFT JOIN job_enrichments e ON e.job_id = j.id"
+                f" WHERE j.source = ? AND j.external_id IN ({','.join('?' * len(batch))})",
+                [source, *batch]).fetchall()
+        for row in rows:
+            listed = _wall_time(listings[row["external_id"]])
+            known = [t for t in (_wall_time(row["posted_at"]), _wall_time(row["last_repost"])) if t]
+            if listed is None or not known or listed < fresh_after or listed - max(known) < gap:
+                continue
+            report["reposts"] += 1
+            last_delivery = _wall_time(row["notified_at"])
+            due = bool(row["notified"]) and (last_delivery is None or last_delivery < delivered_before)
+            listed_at = listed.strftime("%Y-%m-%d %H:%M")
+            conn.execute("INSERT INTO job_reposts (job_id, listed_at, detected_at, redelivered) VALUES (?, ?, ?, ?)",
+                         (row["id"], listed_at, now_str(), int(due)))
+            if not due:
+                continue
+            conn.execute("UPDATE jobs SET notified = 0, next_notify_at = '', notify_attempts = 0,"
+                         " destination_chat_id = NULL, reposted_at = ? WHERE id = ?", (listed_at, row["id"]))
+            if ENRICHMENT_ENABLED:
+                if row["state"] == "ready" and row["schema_version"] == ENRICHMENT_SCHEMA_VERSION:
+                    # "Ready since now", so queue-age metrics and alerts stay honest.
+                    conn.execute("UPDATE job_enrichments SET updated_at = ? WHERE job_id = ?", (now_str(), row["id"]))
+                elif row["enrichment_id"] is None:
+                    conn.execute("INSERT INTO job_enrichments (job_id, country, updated_at, created_at, batch_id)"
+                                 " VALUES (?, 'EG', ?, ?, ?)", (row["id"], now_str(), now_str(), _active_scrape_batch))
+                else:
+                    conn.execute("UPDATE job_enrichments SET state = 'pending', attempts = 0, next_attempt_at = '',"
+                                 " error = NULL, created_at = ?, updated_at = ?, batch_id = ? WHERE job_id = ?",
+                                 (now_str(), now_str(), _active_scrape_batch, row["id"]))
+            report["requeued"].append(row["id"])
+    if report["requeued"]:
+        wakeup.notify("delivery")
+    return report
+
+
 def mark_seen(source: str, external_id: str):
     """Record an id as seen WITHOUT saving a job — used for jobs we
     deliberately drop (e.g. blocked companies) so they're never
@@ -339,7 +423,7 @@ def get_unnotified(source: str | None = None, limit: int = NOTIFY_BATCH_SIZE) ->
             args.append(source)
         args.extend((NOTIFY_PER_CHANNEL_LIMIT, max(0, limit)))
         return conn.execute(
-            "SELECT * FROM (SELECT j.id, j.source, j.title, j.company, j.posted_at, j.link, j.extra,"
+            "SELECT * FROM (SELECT j.id, j.source, j.title, j.company, j.posted_at, j.link, j.extra, j.reposted_at, j.scraped_at,"
             " j.destination_chat_id, e.job_family, e.employer_sector, e.country, e.needs_review, ROW_NUMBER() OVER (PARTITION BY "
             " COALESCE(j.destination_chat_id, e.job_family, 'legacy')"
             " ORDER BY j.posted_at, j.id) AS channel_rank FROM jobs j"

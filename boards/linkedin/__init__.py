@@ -101,4 +101,4 @@ class LinkedInBoard(JobBoard):
             )
             return 0
 
-        return self.finish_scrape(record, health, result["items"])
+        return self.finish_scrape(record, health, result["items"], result.get("listings"))

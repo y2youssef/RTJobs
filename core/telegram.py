@@ -11,7 +11,7 @@ import requests
 
 from config import (TELEGRAM_CHAT_ID, TELEGRAM_FAILURE_CHAT_ID, TELEGRAM_TOKEN, TELEGRAM_API_BASE_URL,
                     ENRICHMENT_ENABLED, CLASSIFIED_DELIVERY_ENABLED, NOTIFY_PER_CHANNEL_LIMIT)
-from core import db
+from core import clock, db
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +140,16 @@ def notify_jobs(pending: list, *, stop=None, progress=None) -> int:
         manager = str(extra.get("hiring_manager_name") or "")[:150]
         role = str(extra.get("hiring_manager_role") or "")[:300]
         mgr = f"\n👤 *{escape_md(manager)}* — {escape_md(role)}" if manager else ""
-        text = (f"{flag}🆕 *{escape_md(title)}*\n🏢 {escape_md(company)}\n"
-                f"🕐 Posted {escape_md(posted)}{mgr}")
-        plain = (f"{flag}🆕 {title}\n🏢 {company}\n🕐 Posted {posted}"
+        reposted = str(job.get("reposted_at") or "")[:50]
+        if reposted:
+            # Same board job ID refreshed by the employer (core/db.record_listings).
+            first_seen = clock.to_local(job.get("scraped_at"))[:10]
+            icon, when = "🔁", f"Reposted {reposted} · first seen {first_seen}"
+        else:
+            icon, when = "🆕", f"Posted {posted}"
+        text = (f"{flag}{icon} *{escape_md(title)}*\n🏢 {escape_md(company)}\n"
+                f"🕐 {escape_md(when)}{mgr}")
+        plain = (f"{flag}{icon} {title}\n🏢 {company}\n🕐 {when}"
                  + (f"\n👤 {manager} — {role}" if manager else ""))
         link = job.get("link") or ""
         if urlsplit(link).scheme in ("http", "https"):
