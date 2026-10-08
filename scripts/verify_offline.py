@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import signal
 import tempfile
 import time
 from contextlib import ExitStack, nullcontext
@@ -508,6 +509,19 @@ def verify_browser_launch():
         raise AssertionError("Chrome child processes survived stop_chrome")
     except ProcessLookupError:
         pass
+    # A forced exit kills every Chrome group still registered as live.
+    group = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60"], start_new_session=True)
+    browser._LIVE.add(group)
+    time.sleep(0.2)
+    browser.kill_live_chrome()
+    group.wait(5)
+    time.sleep(0.2)
+    try:
+        os.killpg(group.pid, 0)
+        raise AssertionError("kill_live_chrome left Chrome children running")
+    except ProcessLookupError:
+        pass
+    assert not browser._LIVE
     print("PASS Chrome launch: origin allow-list, sandbox switch, busy port, crash stderr, process-group stop")
 
 
@@ -566,6 +580,22 @@ def verify_first_page_and_schedule():
             patch.object(entry.sys, "argv", ["main.py", "--scheduled"]):
         entry._start_next_cycle_now()
     assert execv.call_args.args[1][1:] == ["main.py", "--scheduled"]
+    # First signal unwinds via SystemExit; a second one kills our Chrome
+    # groups and exits at once instead of raising into the cleanup.
+    try:
+        entry._handle_term(signal.SIGTERM, None)
+        raise AssertionError("first signal must raise SystemExit")
+    except SystemExit:
+        pass
+    from core import browser as chrome
+    with patch.object(chrome, "kill_live_chrome") as kill, patch.object(entry.os, "_exit") as hard_exit, \
+            patch.object(entry.logging, "shutdown"):
+        try:
+            entry._handle_term(signal.SIGTERM, None)
+        except SystemExit:
+            pass  # only because the mocked os._exit returns
+    assert kill.called and hard_exit.call_args.args[0] == 128 + signal.SIGTERM
+    entry._shutting_down = False
     print("PASS first page only (all cards, no Indeed detail cap), overrun chains the next cycle after releasing the lock")
 
     # A broken selectors.json (live-editable bind mount) skips only that board,

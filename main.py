@@ -26,10 +26,22 @@ _shutting_down = False
 
 
 def _handle_term(signum, _frame):
+    """First SIGTERM/SIGINT: raise SystemExit to unwind.
+
+    Raising is the only way to break blocking waits (Playwright, checkpoint
+    and login-code polling, Telegram long-polls); try/finally blocks then stop
+    Chrome and close the run and cycle rows. SQLite transactions are atomic,
+    so an interrupted write simply rolls back. A second signal means "stop
+    now": kill our Chrome process groups (they would outlive us) and exit
+    without running more cleanup.
+    """
     global _shutting_down
     if _shutting_down:
-        logger.warning("Second signal %s, forcing exit.", signum)
-        sys.exit(1)
+        logger.warning("Second signal %s — forcing exit.", signum)
+        from core import browser
+        browser.kill_live_chrome()
+        logging.shutdown()
+        os._exit(128 + signum)
     _shutting_down = True
     sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
     logger.warning("Received %s (%s) — shutting down gracefully...", sig_name, signum)

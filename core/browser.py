@@ -118,6 +118,10 @@ def _find_chrome() -> str:
     return "/opt/google/chrome/chrome"
 
 
+# Chrome processes we launched and have not stopped yet (for a forced exit).
+_LIVE: set = set()
+
+
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(0.5)
@@ -182,12 +186,15 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     # Own process group, so stop_chrome() also ends renderer/GPU/zygote children.
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
     proc._rtjobs_stderr = stderr
+    _LIVE.add(proc)
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/json/version"
     launched = time.monotonic()
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"Chrome exited early with code {proc.returncode}: {_stderr_tail(proc)}")
+            tail = _stderr_tail(proc)
+            stop_chrome(proc)
+            raise RuntimeError(f"Chrome exited early with code {proc.returncode}: {tail}")
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
@@ -228,9 +235,21 @@ def stop_chrome(proc: subprocess.Popen | None) -> None:
             proc.wait(timeout=5)
     # Children can outlive the parent briefly; never leave them behind.
     _signal_group(proc, signal.SIGKILL)
+    _LIVE.discard(proc)
     stream = getattr(proc, "_rtjobs_stderr", None)
     if stream is not None:
         stream.close()
+
+
+def kill_live_chrome() -> None:
+    """Forced-exit cleanup: SIGKILL every Chrome process group we launched.
+
+    Chrome runs in its own session/process group, so a terminal's Ctrl-C no
+    longer reaches it; without this it would outlive a forced exit and keep
+    the CDP port busy."""
+    for proc in list(_LIVE):
+        _signal_group(proc, signal.SIGKILL)
+        _LIVE.discard(proc)
 
 
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
