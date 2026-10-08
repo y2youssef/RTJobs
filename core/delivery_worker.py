@@ -17,20 +17,36 @@ from core.wakeup import Wakeup
 logger = logging.getLogger(__name__)
 
 
+# The monitor calls a heartbeat stale after PIPELINE_WORKER_STALE_SECONDS
+# (15 min); one write per phase change or 30s is plenty. Writing on every
+# 2-second idle scan cost ~86k SQLite transactions a day.
+_HEARTBEAT_SECONDS = 30
+_last_beat = {'phase': None, 'at': 0.0}
+
+
+def _heartbeat(phase: str):
+    now = time.monotonic()
+    if phase != _last_beat['phase'] or now - _last_beat['at'] >= _HEARTBEAT_SECONDS:
+        db.touch_worker('delivery', phase)
+        _last_beat.update(phase=phase, at=now)
+
+
 def deliver_once(stop=None):
-    # Idle scans (every DELIVERY_POLL_SECONDS) record nothing: latency rows
-    # only for batches that actually carried messages, or the table fills
-    # with thousands of sent=0 measurements per day.
-    db.touch_worker('delivery', 'delivering')
+    # Idle scans (every DELIVERY_POLL_SECONDS) do one indexed query and at
+    # most a throttled heartbeat: no latency rows, no channel-map reload.
+    pending = db.get_unnotified()
+    if not pending:
+        _heartbeat('idle')
+        return 0
+    _heartbeat('delivering')
     oldest = db.oldest_undelivered_ready_at()
     start = time.monotonic()
-    sent = telegram.notify_jobs(db.get_unnotified(), stop=stop,
-                                progress=lambda: db.touch_worker('delivery', 'delivering'))
+    sent = telegram.notify_jobs(pending, stop=stop, progress=lambda: _heartbeat('delivering'))
     elapsed = time.monotonic() - start
     if sent:
         timing.record('delivery', 'delivery_batch', elapsed, {'sent': sent})
         _record_queue_delay(oldest)
-    db.touch_worker('delivery', 'idle')
+    _heartbeat('idle')
     return sent
 
 

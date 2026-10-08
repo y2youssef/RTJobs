@@ -270,6 +270,22 @@ def main():
                 assert not thread.is_alive() and result_box
             print('PASS Telegram delivery proceeds while the next batch model request is blocked')
 
+            # Idle delivery scans neither reload the channel map nor write a
+            # heartbeat every 2 seconds (phase change or 30s only).
+            from core import delivery_worker
+            while db.get_unnotified():
+                with patch.object(telegram, '_send', return_value=True), patch.object(telegram.time, 'sleep'):
+                    deliver_once()
+            delivery_worker._last_beat.update(phase=None, at=0.0)
+            with patch.object(db, 'touch_worker') as beat, patch.object(classify, 'load_channels') as channels:
+                for _ in range(5):
+                    assert deliver_once() == 0
+                assert beat.call_count == 1 and not channels.called
+                delivery_worker._last_beat['at'] -= 31
+                deliver_once()
+                assert beat.call_count == 2
+            print('PASS idle delivery scans: one query, throttled heartbeat, no channel reload')
+
             # Current operational fallback migrations never resend delivered jobs.
             save(2, 'migration')
             with db.get_db() as conn:
