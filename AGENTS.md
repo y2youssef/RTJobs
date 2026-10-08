@@ -87,10 +87,13 @@ description, link, extra(dict), scraped_at`.
    only starts after page_action) — `_wait_for_landing` must run before judging
    the URL, and every failure path re-checks `/feed` (`_fail`); all saved
    login_failure snapshots up to Oct 2026 were the Feed page. `wait_for_url`
-   needs `wait_until="commit"` (default waits for `load`). A visible sign-in
-   error locks logins until the credentials change (salted fingerprint in
-   login_state) or `--reset-login`; checkpoints never wipe the profile; other
-   failures get at most one wipe per streak (core/login_state.py).
+   needs `wait_until="commit"` (default waits for `load`). A visible
+   FIELD-level error (`login.credential_error`: wrong email/password) locks
+   logins until the credentials change (salted fingerprint in login_state) or
+   `--reset-login`; PAGE-level alerts (`login.error`: "unusual activity, try
+   later") only cool down. Checkpoints and alerts never wipe the profile;
+   other failures get at most one wipe per streak (core/login_state.py).
+   `/jobs` counts as logged in only with the `li_at` session cookie.
    Fetch `https://www.linkedin.com/login`, fill with
    human-like typing (EN+AR aware), then `_verify_routing` waits
    event-based via `page.wait_for_url` for `(feed|/jobs|checkpoint|security_verification)`

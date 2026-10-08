@@ -519,9 +519,13 @@ def verify_linkedin_login():
         def __init__(self, elements): self.elements = elements
         def all(self): return self.elements
     class Page:
-        def __init__(self, url, errors=(), redirect_to=None):
+        def __init__(self, url, errors=(), redirect_to=None, alerts=(), cookies=()):
             self.url, self.errors, self.redirect_to = url, list(errors), redirect_to
-        def locator(self, _css): return Locator(self.errors)
+            self.alerts = list(alerts)
+            self.context = SimpleNamespace(cookies=lambda _url=None: list(cookies))
+        def locator(self, css):
+            # Field-level credential errors vs page-level sign-in alerts.
+            return Locator(self.errors if css == sel["login"]["credential_error"] else self.alerts)
         def wait_for_url(self, pattern, timeout=None, wait_until=None):
             assert wait_until == "commit", "LinkedIn never fires load"
             if self.redirect_to:
@@ -574,12 +578,32 @@ def verify_linkedin_login():
         def expire_cooldown():
             login_state.db.set_state(login_state.BLOCKED_KEY, 0)
 
+        # A page-level alert ("try again later") is transient: cooldown only,
+        # never a credential lock, and it does not earn a profile wipe.
+        alerts.reset_mock()
+        busy = Page("https://www.linkedin.com/login", alerts=[Element("Unusual activity. Please try again later.")])
+        assert login._classify(busy, sel) is False
+        assert not login_state.credentials_locked("user@example.com", "new-password")
+        assert login_state.get_retry_count() == 1 and login_state.is_blocked() and not alerts.called
+        for _ in range(2):
+            expire_cooldown()
+            login._register_failure("alert", "sign-in alert", error_text="Unusual activity. Please try again later.")
+        expire_cooldown()
+        assert login_state.max_retries_reached() and not login_state.should_wipe_profile()
+        assert "sign-in alert" in alerts.call_args.args[1] and "Unusual activity" in alerts.call_args.args[1]
+        login_state.reset_retries()
+
+        # /jobs counts as logged in only with LinkedIn's session cookie.
+        assert login._is_logged_in(Page("https://www.linkedin.com/jobs/", cookies=[{"name": "li_at", "value": "x"}]))
+        assert not login._is_logged_in(Page("https://www.linkedin.com/jobs/"))
+        assert not login._is_logged_in(Page("https://www.linkedin.com/login", cookies=[{"name": "li_at", "value": "x"}]))
+
         # Unsolved checkpoints keep cooling down but never wipe the profile.
         for _ in range(4):
             login._register_failure("checkpoint", "checkpoint unresolved")
             expire_cooldown()
         assert login_state.max_retries_reached() and not login_state.should_wipe_profile()
-        assert "checkpoint is involved" in alerts.call_args.args[1]
+        assert "checkpoint or sign-in alert is involved" in alerts.call_args.args[1]
         login_state.reset_retries()
 
         # Other failures earn exactly one wipe per streak, then cooldowns only.
@@ -596,7 +620,7 @@ def verify_linkedin_login():
         assert not login_state.should_wipe_profile()
         assert alerts.call_count == 2 and "already failed" in alerts.call_args.args[1]
         login_state.reset_retries()
-    print("PASS LinkedIn login: late feed redirect, credential lock, checkpoint never wipes, one wipe per streak")
+    print("PASS LinkedIn login: late feed redirect, credential lock vs transient alerts, cookie-checked /jobs, checkpoint never wipes, one wipe per streak")
 
 
 

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import time
+from urllib.parse import urlsplit
 
 from config import (
     CHECKPOINT_WAIT_SECONDS,
@@ -63,18 +64,32 @@ def _on_checkpoint(url: str) -> bool:
     return bool(_CHECKPOINT.search(url))
 
 
+def _has_session_cookie(page) -> bool:
+    """LinkedIn's auth cookie (li_at); guests redirected to /jobs never have it."""
+    try:
+        return any(c.get("name") == "li_at" and c.get("value")
+                   for c in page.context.cookies("https://www.linkedin.com"))
+    except Exception:
+        return False
+
+
 def _is_logged_in(page) -> bool:
-    return bool(_FEED_OK.search(page.url))
+    url = page.url
+    if _FEED_OK.search(url):
+        return True
+    # /jobs alone is ambiguous (guests are redirected there too, Gotchas #5);
+    # it counts only together with the session cookie.
+    return "/jobs" in urlsplit(url).path and _has_session_cookie(page)
 
 
-def _login_error_text(page, selectors: dict) -> str:
-    """Text of a VISIBLE, non-empty sign-in error, else "".
+def _visible_text(page, css: str) -> str:
+    """Text of the first VISIBLE, non-empty element matching css, else "".
 
-    A rejected login now pauses all automatic logins, so hidden/empty error
-    placeholders in the form markup must never count as a rejection.
+    A credential error pauses all automatic logins, so hidden/empty error
+    placeholders in the form markup must never count.
     """
     try:
-        for element in page.locator(selectors["login"]["error"]).all()[:5]:
+        for element in page.locator(css).all()[:5]:
             if element.is_visible():
                 text = " ".join((element.text_content() or "").split())
                 if text:
@@ -152,7 +167,7 @@ def _register_failure(kind: str, reason: str, snapshot: str | None = None,
         )
         return
 
-    count = login_state.record_failure(checkpoint=(kind == "checkpoint"))
+    count = login_state.record_failure(checkpoint=kind in ("checkpoint", "alert"))
     logger.warning(f"[login] Failure ({reason}). Consecutive failures: {count}")
 
     if login_state.max_retries_reached() and not login_state.alert_already_sent():
@@ -162,14 +177,15 @@ def _register_failure(kind: str, reason: str, snapshot: str | None = None,
             next_step = "After the cooldown the profile is wiped once and login retried from scratch."
         elif login_state.streak_had_checkpoint():
             next_step = ("Logins continue after each cooldown (max 30 min); the profile is not"
-                         " wiped because a security checkpoint is involved.")
+                         " wiped because a security checkpoint or sign-in alert is involved.")
         else:
             next_step = ("Logins continue after each cooldown (max 30 min); the profile is not"
                          " wiped again because a fresh profile already failed.")
+        latest = f' Latest LinkedIn message: "{error_text}".' if error_text else ""
         notify_failure(
             "LinkedIn login failing repeatedly",
             f"{count} consecutive failures — scraping is now blocked for"
-            f" ~{cooldown // 60} minutes. {next_step}\n\n"
+            f" ~{cooldown // 60} minutes. {next_step}{latest}\n\n"
             "Check whether LinkedIn needs a manual checkpoint solve.",
             snapshot,
         )
@@ -296,10 +312,17 @@ def _classify(page, selectors: dict) -> bool | None:
     if _on_checkpoint(page.url):
         return _handle_checkpoint(page, selectors)
 
-    error_text = _login_error_text(page, selectors)
-    if error_text:
+    # Field-level errors (wrong email/password) mean the credentials are bad;
+    # page-level alerts ("unusual activity, try later") are transient security
+    # signals: cooldowns, but never a credential lock or a profile wipe.
+    credential_error = _visible_text(page, selectors["login"]["credential_error"])
+    if credential_error:
         logger.warning("[login] LinkedIn rejected the credentials.")
-        return _fail(page, "credentials", "credentials rejected", error_text)
+        return _fail(page, "credentials", "credentials rejected", credential_error)
+    alert = _visible_text(page, selectors["login"]["error"])
+    if alert:
+        logger.warning(f"[login] LinkedIn sign-in alert: {alert}")
+        return _fail(page, "alert", "sign-in alert", alert)
 
     return None
 

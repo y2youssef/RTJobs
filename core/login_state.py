@@ -6,8 +6,9 @@ Failure kinds decide what later runs may do:
   risk an account restriction, so logins stop until the credentials change
   (detected through a salted fingerprint, never the password itself) or
   `python main.py --reset-login`.
-- checkpoint: a security check was not solved in time. Escalating cooldowns
-  keep asking for a manual solve, but the profile is never wiped: a fresh
+- checkpoint / alert: a security check was not solved in time, or LinkedIn
+  showed a page-level sign-in alert ("unusual activity, try later").
+  Escalating cooldowns keep retrying, but the profile is never wiped: a fresh
   device makes LinkedIn more suspicious, not less.
 - other (automation error, unexpected landing): escalating cooldowns, then ONE
   profile wipe per failure streak; if that does not help, cooldowns only.

@@ -2,7 +2,8 @@
   "login": {
     "username": "input[autocomplete*='username']:visible",
     "password": "input[autocomplete='current-password']:visible",
-    "error": "#error-for-password, #error-for-username, .alert-content, #error",
+    "credential_error": "#error-for-password, #error-for-username",
+    "error": ".alert-content, #error",
     "sign_in_with_email": "Sign in with email",
     "continue": "Continue"
   },
