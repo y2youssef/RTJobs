@@ -116,8 +116,10 @@ description, link, extra(dict), scraped_at`.
    d. After a killed Chrome the profile keeps `Singleton*` lock files →
       next launch fails with "profile appears to be in use";
       `kill_zombie_chrome` removes them (container mode only).
-   e. Container TZ defaults to UTC → posted_at/scraped_at off by 3h;
-      compose pins `TZ=Africa/Cairo`.
+   e. Container TZ defaults to UTC; compose pins `TZ=Africa/Cairo`. Stored
+      timestamps are UTC by design (core/clock.py), but TZ still drives
+      `posted_at` (local), the budget day, alert rendering and the one-time
+      local->UTC migration, which must run under the same TZ.
 7. **ofelia**: `latest` is the 0.3.x line — cron strings NEED the leading
    seconds field (`"0 */3 * * * *"`, built from `SCRAPE_INTERVAL_MINUTES`,
    which must divide 60). `no-overlap: "true"` skips a tick while a run is
@@ -243,6 +245,8 @@ Set dummy env before importing config in test scripts:
   displayed and analytics bucket it by local hour. Never use `datetime.now()`
   for a stored/compared timestamp: Cairo DST repeats an hour each October.
   Existing local rows were converted once (`PRAGMA user_version` 1).
+  `scraped_at` now always has seconds (`HH:MM:SS`); older rows had `HH:MM`
+  and gained `:00` in the migration — parse with `datetime.fromisoformat`.
 
 ## Enrichment and parser alerts (2026-10-03)
 - Save raw data first with `boards.base.persist_jobs`; queued AI work is a row in

@@ -1,5 +1,4 @@
 """Offline integration checks for cycle batching, concurrent delivery and alerts."""
-import copy
 from datetime import datetime, timedelta
 import json
 import logging

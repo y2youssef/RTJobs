@@ -8,7 +8,6 @@ from unittest.mock import patch
 def verify_classifier(client, channels):
     from core import db, telegram
     from core import classify
-    from core.enrichment_worker import process_job
     from scripts.check_channels import audit_channels
 
     def rejected(result):

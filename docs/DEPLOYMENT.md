@@ -149,6 +149,10 @@ every board with a 3-minute ofelia schedule (`SCRAPE_INTERVAL_MINUTES`,
 no-overlap, immediate catch-up cycle after an overrun), and no idle 5s wait
 after the LinkedIn/Indeed login checks. The scraper `command` and ofelia
 labels change, so the containers must be recreated (the commands below do).
+`jobs.scraped_at` changes shape from `HH:MM` local to `HH:MM:SS` UTC; anything
+reading the DB directly should parse it with `datetime.fromisoformat`.
+To change the cadence later, set `SCRAPE_INTERVAL_MINUTES` in `.env` and run
+`docker compose up -d` (it recreates both the scraper and the scheduler).
 
 The first process on the new image converts existing local timestamps once
 (`PRAGMA user_version` 0 -> 1). An old-image process still running afterwards

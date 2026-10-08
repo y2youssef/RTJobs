@@ -24,6 +24,9 @@ services:
       - LOG_FILE=/data/logs/scraper.log
       - KILL_CHROME_ON_START=true
       # Same value drives ofelia's cron below (set it in .env; must divide 60).
+      # Compose substitutes it at `up` time into BOTH this entry (which wins
+      # over env_file) and the cron label, so they cannot disagree; after a
+      # change, `docker compose up -d` recreates the scraper and the scheduler.
       - SCRAPE_INTERVAL_MINUTES=${SCRAPE_INTERVAL_MINUTES:-3}
     volumes:
       - chrome_profile:/app/chromeprofile
