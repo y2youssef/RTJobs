@@ -36,6 +36,8 @@ def main():
                 or path.suffix in ('.db', '.pyc', '.log', '.pem', '.key')
                 or 'snapshots' in path.parts):
             failures.append((name, 'private/generated artifact'))
+        if path.name.startswith(('codex-session-', 'claude-session-')) or path.name.endswith('.transcript.md'):
+            failures.append((name, 'agent session transcript'))
         try:
             content = path.read_text()
         except UnicodeDecodeError:

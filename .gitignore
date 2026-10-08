@@ -37,3 +37,9 @@ jobs.json
 # local experiments not tracked
 dataanalysis/
 jobnetworkminiapp/
+
+# AI agent session transcripts: may hold commands, paths and account details.
+# Also blocked by .git/hooks/pre-commit + pre-push and scripts/check_repository.py.
+codex-session-*
+claude-session-*
+*.transcript.md

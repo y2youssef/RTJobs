@@ -44,3 +44,8 @@ login.html
 linkedin_jobs.db
 linkedin_jobs.json
 jobs.json
+
+# AI agent session transcripts (never baked into the image)
+codex-session-*
+claude-session-*
+*.transcript.md
