@@ -12,6 +12,10 @@ from config import (MARKUP_DIR, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, CLASSIF
                     CLASSIFIER_MAX_INPUT_CHARS, TELEGRAM_CHANNELS_JSON)
 
 
+# Persisted error prefix for cycles held back by Enricher.capacity_problem.
+CAPACITY_PREFIX = "Cycle too large for one request: "
+
+
 class EnrichmentError(RuntimeError):
     """An unavailable provider or an invalid model response; safe to retry."""
 
@@ -37,6 +41,7 @@ class Enricher:
         self.pricing = None
         self.max_completion_tokens = None
         self.context_length = None
+        self._minimum_result_tokens = None
 
     def close(self):
         self.session.close()
@@ -99,6 +104,11 @@ class Enricher:
                 "The previous whole-batch response failed local validation: " + feedback +
                 "\nCorrect this issue and recheck every result against the schema and taxonomy. "
                 "Return all input job IDs exactly once. Do not omit jobs or invent missing evidence."})
+        if self.context_length:
+            # Providers reject prompt + max_tokens beyond the context window.
+            # The optimistic input estimate never lowers a request that the
+            # provider would otherwise have accepted.
+            output_tokens = max(1, min(output_tokens, self.context_length - _optimistic_tokens(messages)))
         return {"model": CLASSIFIER_MODEL,
                 "messages": messages,
                 "max_tokens": output_tokens,
@@ -138,6 +148,34 @@ class Enricher:
         input_bytes = len(json.dumps(payload, ensure_ascii=False).encode()) + 1024
         return 2 * (input_bytes * self.pricing["prompt"] +
                     payload["max_tokens"] * self.pricing["completion"] + self.pricing["request"])
+
+    def capacity_problem(self, data: list[dict], bound: float, budget: float) -> str:
+        """Why this whole batch can never be sent as one request, or "".
+
+        Estimates are deliberately optimistic, so only a cycle that cannot fit
+        even then is held back; a borderline cycle is still attempted. Holding
+        back costs nothing, while sending it would pay for a guaranteed failure
+        on every retry. Call after request_bound (it loads the model limits).
+        """
+        prefix = CAPACITY_PREFIX
+        if bound > budget:
+            return prefix + f"reserved cost ${bound:.2f} exceeds the ${budget:.2f} daily budget"
+        minimum_output = len(data) * self.minimum_result_tokens()
+        if self.max_completion_tokens and minimum_output > self.max_completion_tokens:
+            return prefix + (f"{len(data)} jobs need at least ~{minimum_output:,} output tokens; "
+                             f"the model allows {self.max_completion_tokens:,}")
+        if self.context_length:
+            input_tokens = _optimistic_tokens(self.payload(data)["messages"])
+            if input_tokens + minimum_output > self.context_length:
+                return prefix + (f"~{input_tokens:,} input + ~{minimum_output:,} output tokens exceed "
+                                 f"the model's {self.context_length:,}-token context")
+        return ""
+
+    def minimum_result_tokens(self) -> int:
+        """Lower bound for one valid result: the all-empty schema object, compact."""
+        if self._minimum_result_tokens is None:
+            self._minimum_result_tokens = _optimistic_tokens(self.fallback(1))
+        return self._minimum_result_tokens
 
     def classify(self, data: dict) -> tuple[dict, dict]:
         """Compatibility helper for an explicitly requested single-job preview."""
@@ -246,6 +284,16 @@ class Enricher:
             needs_review=True, employer_sector=None, posting_entity_type="unknown")
         self.validate(result, job_id)
         return result
+
+
+def _optimistic_tokens(value) -> int:
+    """Low token estimate (~4 UTF-8 bytes per token) for can-never-fit checks.
+
+    Real tokenizers produce more tokens for JSON punctuation and Arabic text,
+    so this only rejects batches that are too large under any tokenizer.
+    """
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return len(text.encode()) // 4
 
 
 def _validate(value, schema: dict, path: str = "result", root: dict | None = None):

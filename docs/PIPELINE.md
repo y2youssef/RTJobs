@@ -64,8 +64,22 @@ also handle scheduled retries. They do not add a normal dispatch delay.
 - Network, provider and validation failures stay pending with exponential delay,
   capped at one hour. They never turn into an Other prediction. The configured
   failure count is an alert threshold, not a terminal retry limit.
-- Budget exhaustion waits until the next local midnight. A batch too expensive
-  for the configured daily budget remains pending and requires a budget change.
+- Invalid model output gets fast paid correction retries (30s, 60s) only until
+  `CLASSIFIER_ALERT_AFTER_FAILURES`; after that the cycle uses the normal
+  backoff, so one stubborn cycle cannot spend the budget every cycle shares.
+  The `classification_retries` alert quotes the stored validation error.
+- Budget exhaustion waits until the next local midnight (all cycles pause).
+- A cycle that can NEVER fit one request — reserved cost above the whole daily
+  budget, or (optimistic estimate) more tokens than the model's context or
+  completion limit — is held back for free and rechecked hourly. Only that
+  cycle waits; there is no global pause. `classification_capacity` alerts;
+  raise the budget, pick a larger model, or split the cycle manually.
+- A job whose saved input cannot be prepared (e.g. `extra` is not a JSON
+  object) is set aside as `state='input_error'`, never delivered and never
+  Other; the rest of its cycle still goes in one request.
+  `classification_input_errors` alerts. Requeue after fixing the data with
+  `UPDATE job_enrichments SET state='pending', next_attempt_at='' WHERE state='input_error'`.
+- A known context window clamps `max_tokens` so prompt + output never exceed it.
 - An interrupted scrape releases its saved jobs when it unwinds, or when the next
   scraper starts after a hard crash. Each cycle remains a separate batch.
 - SQLite work survives worker restarts and laptop shutdown. Timers include time

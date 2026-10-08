@@ -452,6 +452,18 @@ def retry_enrichment_batch(jobs: list[dict], error: str, retry_at: str, attempte
                          [(job.get('attempts', 0) + int(attempted), retry_at, error, now_str(), job['id']) for job in jobs])
 
 
+def quarantine_enrichments(entries: list[tuple[int, str]]):
+    """Set aside jobs whose stored input cannot be prepared (never delivered).
+
+    After fixing the data, requeue with:
+    UPDATE job_enrichments SET state='pending', next_attempt_at='' WHERE state='input_error'
+    """
+    with get_db() as conn:
+        conn.executemany("UPDATE job_enrichments SET state='input_error',error=?,updated_at=? "
+                         "WHERE job_id=? AND state='pending'",
+                         [(error, now_str(), job_id) for job_id, error in entries])
+
+
 def retry_enrichment(job_id: int, attempts: int, error: str, retry_at: str | None = None):
     retry_at = retry_at or (datetime.now() + timedelta(seconds=min(
         CLASSIFIER_RETRY_MAX_SECONDS, 60 * 2 ** min(attempts, 10)))).strftime("%Y-%m-%d %H:%M:%S")

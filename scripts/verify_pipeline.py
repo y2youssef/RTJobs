@@ -36,6 +36,11 @@ def main():
                 db.save_jobs([{'source': 'test', 'external_id': f'{prefix}-{i}', 'title': f'Backend {prefix}-{i}',
                     'description': 'Python. '+prefix+str(i), 'company': 'Example', 'extra': {}} for i in range(n)], enqueue=True)
             def pending(): return [dict(row) for row in db.pending_enrichment_batch()]
+            def batch_jobs(cycle):
+                with db.get_db() as conn:
+                    return [dict(row) for row in conn.execute(
+                        "SELECT j.*,e.attempts,e.batch_id,e.error FROM job_enrichments e JOIN jobs j ON j.id=e.job_id "
+                        "WHERE e.state='pending' AND e.batch_id=? ORDER BY e.job_id", (cycle,))]
             def output(data):
                 results = []
                 for job in reversed(data):
@@ -103,10 +108,27 @@ def main():
                 held = worker.process_batch(fresh, jobs3)
                 assert not pricing.called and held['api_calls'] == 0
             db.set_pipeline_state('classifier', {})
+            # A cycle priced above the WHOLE daily budget can never run: hold
+            # just that cycle (free, hourly recheck) without pausing others.
             with patch.object(client, 'request_bound', return_value=100):
                 held = worker.process_batch(client, jobs3)
             assert all(row['state'] == 'pending' for row in held['jobs']) and held['api_calls'] == 0
-            assert db.get_pipeline_state('classifier')['reason'] == 'daily_budget_exhausted'
+            assert all(row['error'].startswith(classify.CAPACITY_PREFIX) and 'daily budget' in row['error'] for row in held['jobs'])
+            assert db.get_pipeline_state('classifier') == {}, 'an oversized cycle must not pause every cycle'
+            assert all(row['next_attempt_at'] > (datetime.now() + timedelta(minutes=50)).strftime('%Y-%m-%d %H:%M:%S') for row in held['jobs'])
+            checks = monitor.collect_checks()
+            assert checks['classification_capacity'][0] and 'daily budget' in checks['classification_capacity'][1]
+            assert not checks['classification_queue'][0], 'held-back work has its own alert'
+            # Today's remaining budget is short, but the cycle fits a fresh day:
+            # the existing pause-until-midnight behaviour applies.
+            today = datetime.now().strftime('%Y-%m-%d')
+            with db.get_db() as conn:
+                filler = 10 - conn.execute('SELECT amount FROM enrichment_spend WHERE day=?', (today,)).fetchone()[0] - .05
+            assert db.reserve_enrichment_spend(today, filler, 10)
+            with patch.object(client, 'request_bound', return_value=.1):
+                held = worker.process_batch(client, jobs3)
+            assert held['api_calls'] == 0 and db.get_pipeline_state('classifier')['reason'] == 'daily_budget_exhausted'
+            db.reconcile_enrichment_spend(today, filler, 0)
             db.set_pipeline_state('classifier', {})
             print('PASS cycle separation, interrupted-cycle recovery, persistent provider pause and budget deferral')
 
@@ -141,6 +163,73 @@ def main():
                 after = conn.execute('SELECT amount FROM enrichment_spend').fetchone()[0]
             assert abs(after - (before + .01)) < 1e-8, f'Recovery spend wrong: {after} != {before}+.01'
             print('PASS connection-level failures release reservations; recovery classifies the offline backlog')
+
+            # Cycles that can never fit one request are held for free (no
+            # global pause); a known context window clamps max_tokens.
+            sized = classify.Enricher()
+            sized.pricing = {'prompt': 1e-9, 'completion': 1e-9, 'request': 0}
+            sized.max_completion_tokens, sized.context_length = 100_000, 10_000
+            cycle5 = db.start_scrape_batch(); save(3, 'context'); db.finish_scrape_batch(cycle5)
+            jobs5 = batch_jobs(cycle5)
+            data5 = [sized.prepare(job)[0] for job in jobs5]
+            request = sized.payload(data5)
+            assert request['max_tokens'] == 10_000 - classify._optimistic_tokens(request['messages']) < 2200 * 3
+            assert sized.capacity_problem(data5, 0.0, 10) == ''
+            sized.context_length = 3_000  # the system prompt alone is larger
+            with patch.object(sized.session, 'post', side_effect=AssertionError('a hopeless cycle must not be sent')):
+                held = worker.process_batch(sized, jobs5)
+            assert held['api_calls'] == 0 and all('context' in row['error'] for row in held['jobs'])
+            assert db.get_pipeline_state('classifier') == {}
+            sized.context_length, sized.max_completion_tokens = None, 500
+            assert 'output tokens' in sized.capacity_problem(data5, 0.0, 10)
+            sized.close()
+
+            # Repeated invalid output leaves the fast (paid) correction cadence
+            # after the alert threshold; the alert names the validation error.
+            cycle6 = db.start_scrape_batch(); save(2, 'stubborn'); db.finish_scrape_batch(cycle6)
+            for attempt in range(1, config.CLASSIFIER_ALERT_AFTER_FAILURES + 2):
+                jobs6 = batch_jobs(cycle6)
+                with patch.object(client, 'request_bound', return_value=.01), \
+                     patch.object(client.session, 'post', return_value=response(output(jobs6)[:-1])):
+                    report = worker.process_batch(client, jobs6)
+                delay = (datetime.fromisoformat(report['jobs'][0]['next_attempt_at']) - datetime.now()).total_seconds()
+                if attempt < config.CLASSIFIER_ALERT_AFTER_FAILURES:
+                    assert delay <= config.CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS + 5, (attempt, delay)
+                else:
+                    assert delay > config.CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS + 60, (attempt, delay)
+            checks = monitor.collect_checks()
+            assert checks['classification_retries'][0] and 'unexpected job IDs' in checks['classification_retries'][1]
+
+            # One job with unusable saved input is set aside (never Other,
+            # never delivered); the rest of its cycle still goes in ONE request.
+            cycle7 = db.start_scrape_batch(); save(3, 'mixed'); db.finish_scrape_batch(cycle7)
+            jobs7 = batch_jobs(cycle7)
+            jobs7[0]['extra'] = '[]'
+            sent_sizes = []
+            def post7(_url, **kw):
+                data = json.loads(kw['json']['messages'][1]['content'])['jobs']
+                sent_sizes.append(len(data))
+                return response(output(data))
+            with patch.object(client, 'request_bound', return_value=.01), patch.object(client.session, 'post', side_effect=post7):
+                report = worker.process_batch(client, jobs7)
+            assert sent_sizes == [2]
+            states = {row['job_id']: row['state'] for row in report['jobs']}
+            assert states.pop(jobs7[0]['id']) == 'input_error' and set(states.values()) == {'ready'}
+            with db.get_db() as conn:
+                assert conn.execute('SELECT state FROM job_enrichments WHERE job_id=?', (jobs7[0]['id'],)).fetchone()[0] == 'input_error'
+            assert jobs7[0]['id'] not in {row['id'] for row in db.get_unnotified(limit=1000)}
+            checks = monitor.collect_checks()
+            assert checks['classification_input_errors'][0] and 'JSON object' in checks['classification_input_errors'][1]
+
+            # A cycle still scraping (e.g. waiting for a 2FA solve) is not
+            # classifier backlog; once finished, stale work alerts as before.
+            still = db.start_scrape_batch(); save(1, 'still-scraping')
+            with db.get_db() as conn:
+                conn.execute("UPDATE job_enrichments SET created_at='2000-01-01 00:00:00' WHERE batch_id=?", (still,))
+            assert not monitor.collect_checks()['classification_queue'][0]
+            db.finish_scrape_batch(still)
+            assert monitor.collect_checks()['classification_queue'][0]
+            print('PASS hopeless cycles held free without global pause, bounded validation spend, input quarantine, queue alert scope')
 
             # Delivery can commit while a model request is actively blocked.
             entered, release = threading.Event(), threading.Event()

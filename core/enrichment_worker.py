@@ -20,7 +20,8 @@ import requests
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, CLASSIFIER_MODEL,
                     CLASSIFIER_DAILY_BUDGET_USD, CLASSIFIER_RETRY_MAX_SECONDS,
-                    CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS, ENRICHMENT_POLL_SECONDS)
+                    CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS, ENRICHMENT_POLL_SECONDS,
+                    CLASSIFIER_ALERT_AFTER_FAILURES)
 from core import db, timing
 from core.classify import Enricher, EnrichmentError, OutputValidationError
 from core.log import setup_logging
@@ -67,12 +68,21 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
     report = {'jobs': [], 'usage': {}, 'request_id': None, 'api_calls': 0}
     if not jobs:
         return report
-    prepared, cached, outstanding = {}, [], []
+    prepared, cached, outstanding, invalid = {}, [], [], []
     try:
         if len({job['id'] for job in jobs}) != len(jobs):
             raise EnrichmentError('Duplicate input job IDs')
         for job in jobs:
-            data, digest = client.prepare(job)
+            try:
+                data, digest = client.prepare(job)
+            except (EnrichmentError, ValueError, TypeError, KeyError) as exc:
+                # Deterministic local input faults never succeed on retry. Set
+                # just this job aside (never routed to Other) so it cannot hold
+                # the rest of its cycle pending forever.
+                reason = str(exc)[:300] if isinstance(exc, EnrichmentError) else type(exc).__name__
+                invalid.append({'job_id': job['id'], 'state': 'input_error', 'result': None,
+                                'cached': False, 'error': 'Input preparation failed: ' + reason})
+                continue
             prepared[job['id']] = (data, digest)
             try:
                 result = db.cached_enrichment(digest)
@@ -91,10 +101,15 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
         report['jobs'] = _defer(jobs, 'Input preparation failed: ' + type(exc).__name__, preview)
         return report
 
+    if invalid:
+        logger.error('Enrichment set aside %s job(s) with unusable input: %s', len(invalid),
+                     ', '.join(str(row['job_id']) for row in invalid))
+        if not preview:
+            db.quarantine_enrichments([(row['job_id'], row['error']) for row in invalid])
     if cached and not preview:
         db.finish_enrichment_batch([dict(row, input_hash=prepared[row['job_id']][1]) for row in cached],
                                    CLASSIFIER_MODEL, client.version)
-    rows = list(cached)
+    rows = list(cached) + invalid
     usage, bound, day, request_id = {}, None, None, None
     gate = {} if preview else db.get_pipeline_state('classifier')
     stage = 'pricing'
@@ -111,7 +126,15 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                 retry_options = {'feedback': feedback[:1000]} if feedback else {}
                 bound = client.request_bound(data, **retry_options)
                 day = datetime.now().strftime('%Y-%m-%d')
-                if not db.reserve_enrichment_spend(day, bound, CLASSIFIER_DAILY_BUDGET_USD):
+                problem = client.capacity_problem(data, bound, CLASSIFIER_DAILY_BUDGET_USD)
+                if problem:
+                    # Free and cycle-local: no paid call can succeed, and no
+                    # global pause, so other cycles keep flowing while the
+                    # monitor asks the operator to act. Rechecked hourly.
+                    logger.error('Enrichment cycle=%s jobs=%s held back: %s',
+                                 outstanding[0].get('batch_id'), len(outstanding), problem)
+                    rows.extend(_defer(outstanding, problem, preview, _retry_time(10), attempted=False))
+                elif not db.reserve_enrichment_spend(day, bound, CLASSIFIER_DAILY_BUDGET_USD):
                     tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                     retry_at = tomorrow.strftime('%Y-%m-%d %H:%M:%S')
                     if not preview:
@@ -162,8 +185,12 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                 # Do not expose response text, URLs with credentials or raw jobs.
                 error = (('OpenRouter HTTP ' + str(status)) if status else
                          str(exc)[:1000] if isinstance(exc, EnrichmentError) else type(exc).__name__ + ' during ' + stage)
-                retry_at = _retry_time(max(job.get('attempts', 0) for job in outstanding) + 1,
-                                      validation=isinstance(exc, OutputValidationError))
+                attempts = max(job.get('attempts', 0) for job in outstanding) + 1
+                # Correction retries are paid. After the alert threshold, fall
+                # back to the provider backoff so one stubborn cycle cannot
+                # spend the daily budget every other cycle shares.
+                retry_at = _retry_time(attempts, validation=isinstance(exc, OutputValidationError)
+                                       and attempts < CLASSIFIER_ALERT_AFTER_FAILURES)
                 if request_id:
                     db.finish_enrichment_request(request_id, usage, error)
                 if not preview and (isinstance(exc, requests.RequestException) or status or stage == 'pricing'):

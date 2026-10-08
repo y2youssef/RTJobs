@@ -17,6 +17,7 @@ import requests
 
 import config
 from core import db, telegram
+from core.classify import CAPACITY_PREFIX
 from core.log import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -50,12 +51,33 @@ def collect_checks(now=None, started_at=None):
             # recent failed scrape from being advertised as a healthy pipeline.
             checks['scrape_result_' + board] = (bool(enabled and completed and completed['status'] != 'ok'),
                 f'{board}: latest completed scrape was {completed["status"] if completed else "unobserved"}; see board alerts and logs.')
-        pending = conn.execute("SELECT COUNT(*) AS n,MIN(created_at) AS oldest,MAX(attempts) AS attempts FROM job_enrichments WHERE state='pending'").fetchone()
+        # A cycle still scraping (e.g. holding for a 2FA/code solve) is not yet
+        # classifier work, and held-back cycles have their own check below.
+        pending = conn.execute("SELECT COUNT(*) AS n,MIN(e.created_at) AS oldest,MAX(e.attempts) AS attempts "
+            "FROM job_enrichments e LEFT JOIN scrape_batches b ON b.id=e.batch_id WHERE e.state='pending' "
+            "AND (b.status IS NULL OR b.status!='running') AND COALESCE(e.error,'') NOT LIKE ?",
+            (CAPACITY_PREFIX + '%',)).fetchone()
         age = _age(pending['oldest'], now)
         checks['classification_queue'] = (bool(config.ENRICHMENT_ENABLED and age is not None and age > config.PIPELINE_QUEUE_STALE_SECONDS),
             f'{pending["n"]} jobs awaiting classification; oldest wait {int(age or 0)}s. Raw jobs remain saved.')
+        # Stored queue errors are bounded, sanitized local messages (schema
+        # paths, job IDs, enum values, HTTP status), never provider text.
+        latest = conn.execute("SELECT error FROM job_enrichments WHERE state='pending' AND attempts>=? "
+            "ORDER BY updated_at DESC LIMIT 1", (config.CLASSIFIER_ALERT_AFTER_FAILURES,)).fetchone()
         checks['classification_retries'] = (bool(config.ENRICHMENT_ENABLED and (pending['attempts'] or 0) >= config.CLASSIFIER_ALERT_AFTER_FAILURES),
-            f'Classification has failed at least {config.CLASSIFIER_ALERT_AFTER_FAILURES} times for pending work. No failure is routed to Other.')
+            f'Classification has failed at least {config.CLASSIFIER_ALERT_AFTER_FAILURES} times for pending work; '
+            f'retries now back off up to {config.CLASSIFIER_RETRY_MAX_SECONDS // 60} min. '
+            f'Latest error: {((latest["error"] if latest else "") or "unknown")[:300]}. No failure is routed to Other.')
+        held = conn.execute("SELECT COUNT(*) AS n,MAX(error) AS error FROM job_enrichments WHERE state='pending' AND error LIKE ?",
+            (CAPACITY_PREFIX + '%',)).fetchone()
+        checks['classification_capacity'] = (bool(config.ENRICHMENT_ENABLED and held['n']),
+            f'{held["n"]} jobs are held back without paid attempts. {(held["error"] or "")[:300]}. '
+            'Raw jobs remain saved; raise the daily budget, choose a larger model, or split the cycle.')
+        invalid = conn.execute("SELECT COUNT(*) AS n,MAX(error) AS error FROM job_enrichments WHERE state='input_error'").fetchone()
+        checks['classification_input_errors'] = (bool(config.ENRICHMENT_ENABLED and invalid['n']),
+            f'{invalid["n"]} jobs were set aside because their saved input cannot be prepared '
+            f'({(invalid["error"] or "")[:200]}). They are not delivered; fix the data, then set '
+            "state='pending' for state='input_error' rows (see core/db.py quarantine_enrichments).")
         delivery = conn.execute("SELECT COUNT(*) AS n,MIN(CASE WHEN e.job_id IS NULL THEN j.scraped_at ELSE e.updated_at END) AS oldest,"
             "MAX(j.notify_attempts) AS attempts FROM jobs j LEFT JOIN job_enrichments e ON e.job_id=j.id "
             "WHERE j.notified=0 AND (e.job_id IS NULL OR (e.state='ready' AND e.schema_version=?))", (config.ENRICHMENT_SCHEMA_VERSION,)).fetchone()
