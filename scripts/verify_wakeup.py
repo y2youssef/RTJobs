@@ -13,6 +13,19 @@ import time
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def isolated_markup(directory) -> str:
+    """Copy markup/ (minus runtime snapshots) into the test directory.
+
+    The real markup/ is bind-mounted into production as its snapshot store;
+    tests that save evidence there would mix fake snapshots with real ones and
+    let the 20-per-kind pruning evict genuine production evidence.
+    """
+    import shutil
+    target = Path(directory) / "markup"
+    shutil.copytree(ROOT / "markup", target, ignore=shutil.ignore_patterns("snapshots"), dirs_exist_ok=True)
+    return str(target)
+
 sys.path.insert(0, str(ROOT))
 
 
@@ -20,7 +33,7 @@ def main():
     logging.disable(logging.CRITICAL)
     with tempfile.TemporaryDirectory(prefix='rtjobs-wake-') as directory:
         os.environ.update(PYTHON_DOTENV_DISABLED='1', PYTHONPATH=str(ROOT), DATA_DIR=directory,
-            MARKUP_DIR=str(ROOT/'markup'), LOG_FILE='', TELEGRAM_TOKEN='x', TELEGRAM_CHAT_ID='1',
+            MARKUP_DIR=isolated_markup(directory), LOG_FILE='', TELEGRAM_TOKEN='x', TELEGRAM_CHAT_ID='1',
             OPENROUTER_API_KEY='x', ENRICHMENT_ENABLED='true', CLASSIFIED_DELIVERY_ENABLED='true',
             TELEGRAM_CHANNELS_JSON='')
         from core import db, wakeup, enrichment_worker as enrichment, delivery_worker as delivery, telegram, classify

@@ -14,7 +14,7 @@ source .venv/bin/activate.fish      # shell is fish; venv is Python 3.14
 python main.py                      # run all enabled boards
 python main.py --reset-login        # clear LinkedIn retry/cooldown state
 python -m py_compile <files...>     # no linter/typechecker configured — compile check + offline tests are the verification loop
-docker compose up -d --build        # scheduled container run (ofelia)
+docker compose --profile enrichment up -d --build  # ALL services (plain `up --build` skips the workers)
 docker compose logs -f scraper
 ```
 There is NO test framework. Verification = ad-hoc offline scripts that run
@@ -195,6 +195,9 @@ persists in the `indeed_profile` volume, re-login only on expiry with a
 
 ## Offline testing (do this after ANY parsing/selector change)
 Run `.venv/bin/python scripts/verify_offline.py` for the complete offline checks.
+The scripts copy `markup/` (minus snapshots) into their temp dir: the real
+`markup/` is production's bind-mounted snapshot store, so tests must never
+write evidence there.
 It uses temporary SQLite files, dummy credentials and mocked HTTP; intentional
 broken-markup cases must alert for all three boards without sending real messages.
 

@@ -14,10 +14,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def isolated_markup(directory) -> str:
+    """Copy markup/ (minus runtime snapshots) into the test directory.
+
+    The real markup/ is bind-mounted into production as its snapshot store;
+    tests that save evidence there would mix fake snapshots with real ones and
+    let the 20-per-kind pruning evict genuine production evidence.
+    """
+    import shutil
+    target = Path(directory) / "markup"
+    shutil.copytree(ROOT / "markup", target, ignore=shutil.ignore_patterns("snapshots"), dirs_exist_ok=True)
+    return str(target)
+
+
 def main():
     logging.disable(logging.CRITICAL)
     with tempfile.TemporaryDirectory(prefix='rtjobs-pipeline-test-') as directory:
-        os.environ.update(PYTHON_DOTENV_DISABLED='1', DATA_DIR=directory, MARKUP_DIR=str(ROOT/'markup'), LOG_FILE='',
+        os.environ.update(PYTHON_DOTENV_DISABLED='1', DATA_DIR=directory, MARKUP_DIR=isolated_markup(directory), LOG_FILE='',
             TELEGRAM_TOKEN='x', TELEGRAM_CHAT_ID='1', TELEGRAM_TEST_ID='2', TELEGRAM_FAILURE_CHAT_ID='2',
             OPENROUTER_API_KEY='x', ENRICHMENT_ENABLED='true', CLASSIFIED_DELIVERY_ENABLED='true',
             TELEGRAM_CHANNELS_JSON='', CLASSIFIER_DAILY_BUDGET_USD='10', CLASSIFIER_MAX_INPUT_CHARS='0')

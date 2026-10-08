@@ -22,6 +22,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def isolated_markup(directory) -> str:
+    """Copy markup/ (minus runtime snapshots) into the test directory.
+
+    The real markup/ is bind-mounted into production as its snapshot store;
+    tests that save evidence there would mix fake snapshots with real ones and
+    let the 20-per-kind pruning evict genuine production evidence.
+    """
+    import shutil
+    target = Path(directory) / "markup"
+    shutil.copytree(ROOT / "markup", target, ignore=shutil.ignore_patterns("snapshots"), dirs_exist_ok=True)
+    return str(target)
+
+
 def main():
     # Broken fixtures deliberately emit errors; show assertions/PASS lines,
     # not simulated production warnings that could be mistaken for a live outage.
@@ -32,7 +45,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rtjobs-tests-") as directory:
         os.environ.update(PYTHON_DOTENV_DISABLED="1", TELEGRAM_TOKEN="offline",
             TELEGRAM_CHAT_ID="-1001", TELEGRAM_FAILURE_CHAT_ID="-1002",
-            OPENROUTER_API_KEY="offline", DATA_DIR=directory, MARKUP_DIR=str(ROOT / "markup"),
+            OPENROUTER_API_KEY="offline", DATA_DIR=directory, MARKUP_DIR=isolated_markup(directory),
             ENRICHMENT_ENABLED="true", CLASSIFIED_DELIVERY_ENABLED="true", TELEGRAM_CHANNELS_JSON="", LOG_FILE="")
         with patch("requests.sessions.Session.request", side_effect=AssertionError("Network forbidden")):
             verify(directory)
