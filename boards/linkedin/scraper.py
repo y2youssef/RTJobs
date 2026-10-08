@@ -35,6 +35,11 @@ from core.log import configure_spider_logging
 logger = logging.getLogger(__name__)
 
 _DETAIL_TIMEOUT = 8_000
+# LinkedIn renders 25 cards per search page. The list loads top-first and
+# appends the rest while scrolled: snapshots caught 7 of 25 (positions 0-6).
+_FULL_PAGE = 25
+_SETTLE_SECONDS = 6
+_STABLE_SECONDS = 1.5
 
 _TIME_DELTAS = {
     "minute": lambda v: timedelta(minutes=v),
@@ -273,7 +278,7 @@ class LinkedInJobSpider(Spider):
             if not await self._wait_for_search(page):
                 return
 
-            cards = await page.locator(self.sel["search"]["job_card"]).all()
+            cards = await self._settled_cards(page)
             card_ids = [(card, await card.get_attribute(self.sel["search"]["job_id_attr"]))
                         for card in cards]
             usable = sum(bool(key) for _, key in card_ids)
@@ -281,6 +286,14 @@ class LinkedInJobSpider(Spider):
                 await self.health.page_failure("search_structure", f"Found {len(cards)} cards but no usable job IDs.", page)
                 return
             self.health.check("search_structure", True)
+            # Only page 1 is read, so an incomplete list silently leaves the
+            # lower cards unchecked until a later run; never observed so far.
+            self.health.check("full_page", len(cards) >= _FULL_PAGE,
+                              f"Only {len(cards)} of {_FULL_PAGE} search cards rendered after waiting; "
+                              "lower cards were not checked this run.")
+            self.health.check("card_ids", usable == len(cards),
+                              f"{len(cards) - usable} of {len(cards)} search cards had no job ID and were "
+                              "skipped (layout change or non-job list items).")
             known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
 
             # Every unknown card on the page, wherever it sits: promoted or
@@ -290,7 +303,8 @@ class LinkedInJobSpider(Spider):
 
             logger.info(
                 f"[info] Found {len(jobs_to_scrape_now)} new jobs and"
-                f" {len(cards) - len(jobs_to_scrape_now)} old jobs on this page."
+                f" {usable - len(jobs_to_scrape_now)} old jobs on this page"
+                f" ({len(cards)} cards, {len(cards) - usable} without ID)."
             )
 
             for card, job_id in jobs_to_scrape_now:
@@ -321,6 +335,31 @@ class LinkedInJobSpider(Spider):
             html = await page.content()
             kind = "search_redirect" if self._login_redirect else "search_empty"
             markup.save_snapshot("linkedin", kind, html)
+
+    async def _settled_cards(self, page):
+        """Card locators once the list is complete: 25 cards, or a count that
+        stopped growing for 1.5s (6s cap). Instant when all 25 are present."""
+        cards = page.locator(self.sel["search"]["job_card"])
+        deadline = time.monotonic() + _SETTLE_SECONDS
+        last, changed_at = -1, time.monotonic()
+        while True:
+            count = await cards.count()
+            now = time.monotonic()
+            if count >= _FULL_PAGE or now >= deadline:
+                break
+            if count != last:
+                last, changed_at = count, now
+            elif now - changed_at >= _STABLE_SECONDS:
+                break
+            try:  # appending is driven by scrolling the results list
+                await page.locator(self.sel["search"]["results_list"]).first.evaluate(
+                    "el => el.scrollTop = el.scrollHeight", timeout=1000)
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+        if count < _FULL_PAGE:
+            logger.warning("[linkedin] Search list settled at %s of %s cards.", count, _FULL_PAGE)
+        return await cards.all()
 
     async def _scrape_card(self, page, card, job_id: str) -> dict | None:
         try:

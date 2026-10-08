@@ -804,7 +804,8 @@ def verify_browser_recovery():
     class Locator:
         def __init__(self, page): self.page = page; self.first = self
         async def evaluate(self, *args, **kwargs): pass
-        async def all(self): return [self.page.card]
+        async def all(self): return [self.page.card] * 25  # a full, already-seen page
+        async def count(self): return 25
     class Page(EventPage):
         url = "https://www.linkedin.com/jobs/search/"
         def __init__(self, recovers=True):
@@ -863,15 +864,48 @@ def verify_browser_recovery():
         assert not await detail._open_card(page, page.card, "123")
         assert page.card.clicks == 1
 
+        # The list loads top-first: wait for all 25 before reading IDs; a list
+        # that stays short, or cards without IDs, raise once-per-episode checks.
+        class IdCard:
+            def __init__(self, job_id): self.job_id = job_id
+            async def get_attribute(self, name): return self.job_id
+        class GrowingList:
+            def __init__(self, counts, ids): self.counts, self.ids, self.current = list(counts), ids, 0
+            first = property(lambda self: self)
+            async def count(self):
+                self.current = self.counts.pop(0) if self.counts else self.current
+                return self.current
+            async def all(self): return [IdCard(i) for i in self.ids[:self.current]]
+            async def evaluate(self, *args, **kwargs): pass
+        class ListPage:
+            url = "https://www.linkedin.com/jobs/search/"
+            def __init__(self, cards): self.cards = cards
+            def locator(self, css): return self.cards
+            async def content(self): return "<html></html>"
+        ids = [str(4477000000 + i) for i in range(25)]
+        async def scan(counts, card_ids):
+            spider = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+            with patch.object(spider, "_wait_for_search", AsyncMock(return_value=True)), \
+                    patch.object(db, "seen_ids_for", return_value=set(ids)):
+                await spider.deep_scan_page(ListPage(GrowingList(counts, card_ids)))
+            return spider.health.checks
+        checks = await scan([7, 7, 12, 25], ids)
+        assert checks["full_page"]["good"] and checks["card_ids"]["good"]
+        checks = await scan([7], ids)
+        assert not checks["full_page"]["good"] and "Only 7 of 25" in checks["full_page"]["detail"]
+        checks = await scan([25], ids[:24] + [None])
+        assert not checks["card_ids"]["good"] and "1 of 25" in checks["card_ids"]["detail"]
+
         failed = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
         failed.health.check("search_fetch", True)  # earlier page worked
         await failed.on_error(None, RuntimeError("net::ERR_CONNECTION_CLOSED https://private/?token=secret"))
         assert failed.health.status == "degraded" and "ERR_CONNECTION_CLOSED" in failed.health.error
         assert "token" not in failed.health.error
 
-    with patch.object(li, "LINKEDIN_SEARCH_RECOVERY_ATTEMPTS", 1), patch.object(asyncio, "sleep", new=AsyncMock()):
+    with patch.object(li, "LINKEDIN_SEARCH_RECOVERY_ATTEMPTS", 1), patch.object(asyncio, "sleep", new=AsyncMock()), \
+            patch.object(li, "_STABLE_SECONDS", 0.05), patch.object(li, "_SETTLE_SECONDS", 0.5):
         asyncio.run(scenarios())
-    print("PASS network/HTTP diagnostics, bounded search/detail recovery, job identity and access-stop cases")
+    print("PASS network/HTTP diagnostics, bounded search/detail recovery, job identity, access stops, complete card list")
 
 
 if __name__ == "__main__":
