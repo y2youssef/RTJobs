@@ -367,7 +367,7 @@ passing a channel check alone does not activate them.
 | `xvfb-run` hangs forever | Missing `xauth` package or PID 1 `SIGUSR1` issue — image installs `xauth` and `docker-compose.yaml` sets `init: true` (tini). See `AGENTS.md:6a-b`. |
 | Chrome SIGTRAP/crash on start | No writable `HOME` — image sets `HOME=/home/scraper` (AGENTS.md:6c). |
 | `profile appears to be in use` | Stale `Singleton*` lock after kill — `KILL_CHROME_ON_START=true` + `core/browser.py:launch_cdp_chrome(clean_locks=True)` clears it (AGENTS.md:6d). Also handled by `init: true` + SIGTERM grace. |
-| Times in DB off by hours | Container TZ defaults to UTC — compose pins `TZ=Africa/Cairo` (AGENTS.md:6e). |
+| Times in DB off by hours | Stored timestamps are UTC by design (only `posted_at` is local). Compose still pins `TZ=Africa/Cairo` for `posted_at`, alert wording and the budget day (AGENTS.md:6e). |
 | `docker stop` leaves zombies | Fixed by `main.py` SIGTERM handler (`stop_chrome` + `finish_run` interrupted) + `init: true`. `kill_zombie_chrome` is now safety-net only. |
 | No failure alerts | Check `TELEGRAM_TEST_ID`/`TELEGRAM_FAILURE_CHAT_ID` is a chat the bot can post to. |
 | Stuck "blocked" state / "LinkedIn rejected the login credentials" | Fix `.env` and recreate the scraper (`docker compose up -d scraper`) — changed credentials unlock automatically. Otherwise `docker compose run --rm scraper python main.py --reset-login` clears retries, cooldown and the credential lock. |

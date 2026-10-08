@@ -5,7 +5,7 @@ A local monitor cannot report a complete host or internet outage while offline.
 """
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import timedelta
 import fcntl
 import json
 import logging
@@ -16,7 +16,7 @@ import threading
 import requests
 
 import config
-from core import db, telegram
+from core import clock, db, telegram
 from core.classify import CAPACITY_PREFIX
 from core.log import setup_logging
 
@@ -24,12 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 def _age(value, now):
-    return max(0, (now - datetime.fromisoformat(value)).total_seconds()) if value else None
+    age = clock.age_seconds(value, now)
+    return None if age is None else max(0, age)
 
 
 def collect_checks(now=None, started_at=None):
     """Read bounded summaries. Missing optional job fields are never failures."""
-    now = now or datetime.now()
+    now = now or clock.utcnow()  # stored timestamps are naive UTC
     grace = started_at is not None and (now - started_at).total_seconds() < config.PIPELINE_STARTUP_GRACE_SECONDS
     checks = {}
     with db.get_db() as conn:
@@ -90,17 +91,17 @@ def collect_checks(now=None, started_at=None):
     gate = db.get_pipeline_state('classifier')
     checks['classifier_provider'] = (bool(config.ENRICHMENT_ENABLED and gate.get('reason') != 'daily_budget_exhausted' and
         (gate.get('alert') or gate.get('failures', 0) >= config.CLASSIFIER_ALERT_AFTER_FAILURES)),
-        f'Classifier provider unavailable: {gate.get("reason", "none")}. Next attempt: {gate.get("pause_until", "not scheduled")}.')
+        f'Classifier provider unavailable: {gate.get("reason", "none")}. Next attempt: {clock.to_local(gate.get("pause_until")) or "not scheduled"} (local time).')
     checks['classifier_budget'] = (bool(config.ENRICHMENT_ENABLED and gate.get('reason') == 'daily_budget_exhausted' and
-        gate.get('pause_until', '') > now.strftime('%Y-%m-%d %H:%M:%S')),
-        f'Daily classifier budget cannot cover the next whole batch. Jobs remain pending until {gate.get("pause_until", "the next budget window")}.')
+        gate.get('pause_until', '') > now.strftime(clock.FORMAT)),
+        f'Daily classifier budget cannot cover the next whole batch. Jobs remain pending until {clock.to_local(gate.get("pause_until")) or "the next budget window"} (local time).')
     return checks
 
 
 def report_checks(checks, now=None):
     """One successful alert per failure episode; retry failed sends after restart."""
-    now = now or datetime.now()
-    stamp = now.strftime('%Y-%m-%d %H:%M:%S')
+    now = now or clock.utcnow()
+    stamp = now.strftime(clock.FORMAT)
     for name, (failing, detail) in checks.items():
         with db.get_db() as conn:
             previous = conn.execute('SELECT * FROM pipeline_alerts WHERE check_name=?', (name,)).fetchone()
@@ -117,14 +118,14 @@ def report_checks(checks, now=None):
         # Network I/O must never hold a SQLite write transaction.
         sent = telegram.notify_failure('Pipeline: ' + name, detail,
             hint='Check enrichment, delivery, monitor and scheduler logs. Saved raw jobs and pending work are retained.')
-        retry = (now + timedelta(seconds=config.PIPELINE_ALERT_RETRY_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
+        retry = (now + timedelta(seconds=config.PIPELINE_ALERT_RETRY_SECONDS)).strftime(clock.FORMAT)
         with db.get_db() as conn:
             conn.execute('UPDATE pipeline_alerts SET last_alert_at=?,next_alert_at=? WHERE check_name=?',
                          (stamp if sent else None, '' if sent else retry, name))
 
 
 def monitor_once(now=None, started_at=None, dry_run=False):
-    now = now or datetime.now()
+    now = now or clock.utcnow()
     checks = collect_checks(now=now, started_at=started_at)
     if not dry_run:
         report_checks(checks, now=now)
@@ -156,7 +157,7 @@ def main():
             return 0
         db.init_db()
         stop = threading.Event()
-        started_at = datetime.now()
+        started_at = clock.utcnow()
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: stop.set())
         try:

@@ -3,14 +3,13 @@
 import argparse
 import fcntl
 import logging
-from datetime import datetime
 from pathlib import Path
 import signal
 import threading
 import time
 
 from config import DB_PATH, ENRICHMENT_ENABLED, CLASSIFIED_DELIVERY_ENABLED, DELIVERY_POLL_SECONDS
-from core import db, telegram, timing
+from core import clock, db, telegram, timing
 from core.classify import load_channels
 from core.log import setup_logging
 from core.wakeup import Wakeup
@@ -37,11 +36,8 @@ def deliver_once(stop=None):
 
 def _record_queue_delay(oldest):
     """Time the head of the queue waited for Telegram since becoming ready."""
-    if not oldest:
-        return
-    try:
-        wait = (datetime.now() - datetime.fromisoformat(oldest)).total_seconds()
-    except ValueError:
+    wait = clock.age_seconds(oldest)
+    if wait is None:
         return
     timing.record('delivery', 'queue_delay', max(0, wait), None)
 

@@ -7,7 +7,7 @@ scripts/report_latency.py) and in the logs as a parseable INFO line:
 
 Recording is best-effort: a metrics failure must never break scraping,
 classification or delivery, so DB errors are swallowed (logged at DEBUG).
-DB timestamps are local time strings; the seconds column is monotonic.
+recorded_at is UTC (core/clock.py); the seconds column is monotonic.
 """
 
 import contextlib

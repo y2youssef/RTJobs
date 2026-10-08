@@ -25,7 +25,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import WUZZUF_SEARCH_URL
-from core import db, markup, timing
+from core import clock, db, markup, timing
 from core.browser import patch_no_load_wait
 from core.scrape_health import ScrapeHealth
 
@@ -242,7 +242,7 @@ def _extract_jobs(html, selectors, seen_ids, entities: dict | None = None,
                 "location": _clean(location[0].get_all_text()) if location else "",
                 "tags": [t for t in tags if t],
             },
-            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "scraped_at": clock.now_str(),  # UTC; posted_at stays local
         }
 
         entity = by_id.get(job_id)

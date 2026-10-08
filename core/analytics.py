@@ -1,6 +1,7 @@
 """Compute v2 market statistics from SQLite; no LLM or network calls.
 
-Times follow the database's local-time convention. Unknown facts stay unknown;
+Windows use posted_at, the one stored timestamp kept in local wall time (all
+operational timestamps are UTC, see core/clock.py). Unknown facts stay unknown;
 salary bounds are benchmarked separately without currency/period conversions.
 """
 from collections import Counter, defaultdict
@@ -44,7 +45,7 @@ def aggregate(rows, now: datetime) -> dict:
     for row in rows:
         try:
             posted = datetime.fromisoformat(row.get('posted_at') or '')
-            if posted.tzinfo: raise ValueError('DB timestamps must be local and naive')
+            if posted.tzinfo: raise ValueError('posted_at must be naive local time')
         except ValueError:
             unknown_times += 1
             continue

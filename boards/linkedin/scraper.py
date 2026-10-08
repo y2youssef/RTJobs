@@ -22,7 +22,7 @@ from config import (LINKEDIN_SEARCH_URL, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS,
                     LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS,
                     LINKEDIN_NAVIGATION_TIMEOUT_SECONDS,
                     LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS)
-from core import db, markup
+from core import clock, db, markup
 from core.browser import patch_no_load_wait
 from core.browser_diagnostics import BrowserDiagnostics
 from core.scrape_health import ScrapeHealth
@@ -468,7 +468,7 @@ class LinkedInJobSpider(Spider):
                     "workplace": header["workplace"],
                     "job_type": header["job_type"],
                 },
-                "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "scraped_at": clock.now_str(),  # UTC; posted_at stays local
             }
         except Exception as e:
             self._detail_failures[str(job_id)] = type(e).__name__

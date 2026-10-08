@@ -138,3 +138,26 @@ The complete offline suite passed on Python 3.14 and container Python 3.13.
 Additional real IPC checks verified cross-process and cross-container wakeups,
 commit visibility, immediate delivery, missed notifications, restart, backoff,
 full/duplicate notifications, shutdown and rollback without a premature wakeup.
+
+## Pending: UTC clock, login safety and cycle limits — not yet deployed
+
+Changes: stored timestamps move to UTC (`core/clock.py`; only `posted_at`
+stays local), LinkedIn rejected-credential lock / late-redirect fix, and
+free hold-back of cycles that can never fit one classifier request.
+
+The first process on the new image converts existing local timestamps once
+(`PRAGMA user_version` 0 -> 1). An old-image process still running afterwards
+would keep writing local times, so restart everything together:
+
+```bash
+docker compose --profile enrichment stop          # scraper, workers, monitor
+docker compose --profile enrichment up -d --build # all services on the new image
+```
+
+Rollback to an older image: stop every service, then convert back before
+starting it (see the script's docstring):
+
+```bash
+docker compose --profile enrichment stop
+docker compose run --rm -e TZ=Africa/Cairo scraper python scripts/revert_utc_timestamps.py --yes
+```

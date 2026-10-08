@@ -33,7 +33,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import INDEED_SEARCH_URL
-from core import db, markup, timing
+from core import clock, db, markup, timing
 from core.browser import patch_no_load_wait
 from core.scrape_health import ScrapeHealth
 
@@ -192,7 +192,7 @@ def _extract_jobs(html: str, seen_ids: set, lookup_seen: bool = False) -> tuple[
                 "description": snippet,
                 "link": f"{_BASE_URL}/viewjob?jk={key}",
                 "extra": extra,
-                "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "scraped_at": clock.now_str(),  # UTC; posted_at stays local
             }
         )
 

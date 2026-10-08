@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -25,6 +26,9 @@ def main():
     # Broken fixtures deliberately emit errors; show assertions/PASS lines,
     # not simulated production warnings that could be mistaken for a live outage.
     logging.disable(logging.CRITICAL)
+    # Production TZ (compose pins it); the UTC migration checks rely on its DST rules.
+    os.environ["TZ"] = "Africa/Cairo"
+    time.tzset()
     with tempfile.TemporaryDirectory(prefix="rtjobs-tests-") as directory:
         os.environ.update(PYTHON_DOTENV_DISABLED="1", TELEGRAM_TOKEN="offline",
             TELEGRAM_CHAT_ID="-1001", TELEGRAM_FAILURE_CHAT_ID="-1002",
@@ -56,6 +60,13 @@ def verify(directory):
                  " external_id TEXT NOT NULL, title TEXT, company TEXT, posted_at TEXT, description TEXT,"
                  " link TEXT, extra TEXT, scraped_at TEXT, notified INTEGER DEFAULT 0, UNIQUE(source,external_id))")
     conn.execute("INSERT INTO jobs(source,external_id,description,notified) VALUES ('legacy','old','keep me',1)")
+    # Pre-UTC rows hold Cairo wall time: summer (+3) and winter (+2) values.
+    conn.execute("INSERT INTO jobs(source,external_id,posted_at,scraped_at) VALUES"
+                 " ('legacy','summer','2026-08-09 16:48','2026-08-09 16:48'),"
+                 " ('legacy','winter','2026-12-01 12:00','2026-12-01 12:00:00')")
+    conn.execute("CREATE TABLE pipeline_state (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO pipeline_state VALUES ('classifier',"
+                 " '{\"reason\":\"daily_budget_exhausted\",\"pause_until\":\"2026-08-10 00:00:00\"}', '2026-08-09 17:00:00')")
     conn.commit()
     conn.close()
     db.init_db()
@@ -64,6 +75,24 @@ def verify(directory):
         assert conn.execute("SELECT description,notified FROM jobs WHERE external_id='old'").fetchone()[:] == ("keep me", 1)
         assert conn.execute("SELECT count(*) FROM job_enrichments").fetchone()[0] == 0
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        # Converted exactly once (two init_db calls); posted_at stays local.
+        rows = {r[0]: r[1:] for r in conn.execute("SELECT external_id,posted_at,scraped_at,next_notify_at FROM jobs")}
+        assert rows["summer"] == ("2026-08-09 16:48", "2026-08-09 13:48:00", "")
+        assert rows["winter"] == ("2026-12-01 12:00", "2026-12-01 10:00:00", "")
+        state = conn.execute("SELECT value,updated_at FROM pipeline_state WHERE name='classifier'").fetchone()
+        assert json.loads(state[0])["pause_until"] == "2026-08-09 21:00:00" and state[1] == "2026-08-09 14:00:00"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        conn.execute("DELETE FROM jobs WHERE external_id IN ('summer','winter')")
+        conn.execute("DELETE FROM pipeline_state")
+    # The October fallback repeats local 23:00-24:00; stored UTC stays ordered.
+    from core import clock
+    from datetime import date
+    assert clock.to_local("2026-10-29 20:30:00") == clock.to_local("2026-10-29 21:30:00") == "2026-10-29 23:30:00"
+    assert clock.next_local_midnight(date(2026, 10, 28)) == "2026-10-28 21:00:00"  # +3 night
+    assert clock.next_local_midnight(date(2026, 10, 29)) == "2026-10-29 22:00:00"  # fallback night, +2
+    from datetime import datetime
+    assert clock.age_seconds("2026-10-29 20:30:00", datetime.fromisoformat("2026-10-29 21:30:00")) == 3600
+    print("PASS UTC storage: one-time local->UTC migration, posted_at kept local, DST-safe deadlines")
 
     raw = (ROOT / "markup/wuzzuf/wazzuf_guide.txt").read_text()
     html = raw[raw.find("<!DOCTYPE"):]

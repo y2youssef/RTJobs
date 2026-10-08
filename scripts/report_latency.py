@@ -14,7 +14,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +78,7 @@ def scheduler_alignment(conn: sqlite3.Connection, since: str) -> list[float]:
             moment = datetime.fromisoformat(started_at)
         except ValueError:
             continue
-        stamp = moment.timestamp()
+        stamp = moment.replace(tzinfo=timezone.utc).timestamp()  # stored timestamps are UTC
         gaps.append(stamp - (stamp // GRID_SECONDS) * GRID_SECONDS)
     return gaps
 
@@ -103,12 +103,13 @@ def main() -> int:
     parser.add_argument("--db", default="")
     args = parser.parse_args()
     import config
+    from core import clock
 
     path = args.db or config.DB_PATH
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
-    since = (datetime.now() - timedelta(hours=args.hours)).strftime("%Y-%m-%d %H:%M:%S")
+    since = (clock.utcnow() - timedelta(hours=args.hours)).strftime(clock.FORMAT)
 
-    print(f"== Latency report, last {args.hours:g}h (since {since}) ==")
+    print(f"== Latency report, last {args.hours:g}h (since {clock.to_local(since)} local) ==")
     stages = stage_summary(conn, since)
     if stages:
         print("\n-- measured stages --")

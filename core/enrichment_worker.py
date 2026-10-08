@@ -6,7 +6,7 @@ Delivery runs independently in core.delivery_worker.
 """
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime
 import fcntl
 import json
 import logging
@@ -22,7 +22,7 @@ from config import (DB_PATH, ENRICHMENT_ENABLED, CLASSIFIER_MODEL,
                     CLASSIFIER_DAILY_BUDGET_USD, CLASSIFIER_RETRY_MAX_SECONDS,
                     CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS, ENRICHMENT_POLL_SECONDS,
                     CLASSIFIER_ALERT_AFTER_FAILURES)
-from core import db, timing
+from core import clock, db, timing
 from core.classify import Enricher, EnrichmentError, OutputValidationError
 from core.log import setup_logging
 from core.wakeup import Wakeup
@@ -34,7 +34,7 @@ def _retry_time(attempts, validation=False):
     ceiling = CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS if validation else CLASSIFIER_RETRY_MAX_SECONDS
     base = 15 if validation else 60
     delay = min(ceiling, base * 2 ** min(attempts, 10))
-    return (datetime.now() + timedelta(seconds=delay)).strftime('%Y-%m-%d %H:%M:%S')
+    return clock.after(delay)
 
 
 def _defer(jobs, error, preview, retry_at=None, attempted=True):
@@ -42,7 +42,7 @@ def _defer(jobs, error, preview, retry_at=None, attempted=True):
     retry_at = retry_at or _retry_time(max(job.get('attempts', 0) for job in jobs) + 1)
     if not preview:
         db.retry_enrichment_batch(jobs, error, retry_at, attempted)
-    logger.warning('Enrichment deferred jobs=%s until=%s reason=%s', len(jobs), retry_at, error)
+    logger.warning('Enrichment deferred jobs=%s until=%s (local) reason=%s', len(jobs), clock.to_local(retry_at), error)
     return [{'job_id': job['id'], 'state': 'pending', 'result': None,
              'cached': False, 'error': error, 'next_attempt_at': retry_at} for job in jobs]
 
@@ -125,7 +125,7 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                                  if (job.get('error') or '').startswith('Invalid enrichment:')), '')
                 retry_options = {'feedback': feedback[:1000]} if feedback else {}
                 bound = client.request_bound(data, **retry_options)
-                day = datetime.now().strftime('%Y-%m-%d')
+                day = datetime.now().strftime('%Y-%m-%d')  # budget day = local calendar day
                 problem = client.capacity_problem(data, bound, CLASSIFIER_DAILY_BUDGET_USD)
                 if problem:
                     # Free and cycle-local: no paid call can succeed, and no
@@ -135,8 +135,7 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                                  outstanding[0].get('batch_id'), len(outstanding), problem)
                     rows.extend(_defer(outstanding, problem, preview, _retry_time(10), attempted=False))
                 elif not db.reserve_enrichment_spend(day, bound, CLASSIFIER_DAILY_BUDGET_USD):
-                    tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                    retry_at = tomorrow.strftime('%Y-%m-%d %H:%M:%S')
+                    retry_at = clock.next_local_midnight()
                     if not preview:
                         db.set_pipeline_state('classifier', {'reason': 'daily_budget_exhausted',
                             'pause_until': retry_at, 'failures': 0, 'alert': True})
@@ -219,10 +218,7 @@ def _record_queue_delay(jobs: list[dict]):
     """Time the cycle waited between the scrape commit and this pickup."""
     committed = db.scrape_batch_finished_at(jobs[0].get('batch_id'))
     anchor = committed or max(str(job.get('scraped_at') or '') for job in jobs)
-    try:
-        wait = (datetime.now() - datetime.fromisoformat(anchor)).total_seconds() if anchor else 0
-    except ValueError:
-        wait = 0
+    wait = clock.age_seconds(anchor) or 0
     timing.record('enrichment', 'queue_delay', max(0, wait),
                   {'jobs': len(jobs), 'cycle': jobs[0].get('batch_id')})
 

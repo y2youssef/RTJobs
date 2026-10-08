@@ -227,8 +227,12 @@ Set dummy env before importing config in test scripts:
   + `sid=` routing, per-request `page_action` for in-page work, `parse`
   yields job dicts and follow-up `Request`s.
 - Docstrings/comments are used throughout — keep that style when editing.
-- DB timestamps are local time strings `YYYY-MM-DD HH:MM(:SS)`; snapshot
-  filenames are UTC. Don't mix formats.
+- DB timestamps are UTC strings `YYYY-MM-DD HH:MM:SS` via `core/clock.py`
+  (`clock.now_str/after/age_seconds`; `to_local` for anything shown to the
+  user). The ONE exception is `jobs.posted_at`: local wall time, because it is
+  displayed and analytics bucket it by local hour. Never use `datetime.now()`
+  for a stored/compared timestamp: Cairo DST repeats an hour each October.
+  Existing local rows were converted once (`PRAGMA user_version` 1).
 
 ## Enrichment and parser alerts (2026-10-03)
 - Save raw data first with `boards.base.persist_jobs`; queued AI work is a row in

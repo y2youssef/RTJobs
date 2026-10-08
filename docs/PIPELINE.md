@@ -84,6 +84,9 @@ also handle scheduled retries. They do not add a normal dispatch delay.
   scraper starts after a hard crash. Each cycle remains a separate batch.
 - SQLite work survives worker restarts and laptop shutdown. Timers include time
   spent offline. A provider timeout or process crash can cause a billable retry.
+- Stored timestamps are UTC (`core/clock.py`), so deadlines and ages are
+  unaffected by Cairo's DST switches; only `jobs.posted_at` is local wall time.
+  Alerts render times in local time.
 - Existing delivered jobs retain their acknowledgements. Only undelivered
   current-schema operational fallbacks are restored to pending on migration.
 

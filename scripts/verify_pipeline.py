@@ -23,7 +23,7 @@ def main():
             OPENROUTER_API_KEY='x', ENRICHMENT_ENABLED='true', CLASSIFIED_DELIVERY_ENABLED='true',
             TELEGRAM_CHANNELS_JSON='', CLASSIFIER_DAILY_BUDGET_USD='10', CLASSIFIER_MAX_INPUT_CHARS='0')
         import requests
-        from core import db, telegram, classify, enrichment_worker as worker, pipeline_monitor as monitor
+        from core import clock, db, telegram, classify, enrichment_worker as worker, pipeline_monitor as monitor
         from core.delivery_worker import deliver_once
         import config
         # Any forgotten mock is an immediate failure, never a real HTTP call.
@@ -115,7 +115,7 @@ def main():
             assert all(row['state'] == 'pending' for row in held['jobs']) and held['api_calls'] == 0
             assert all(row['error'].startswith(classify.CAPACITY_PREFIX) and 'daily budget' in row['error'] for row in held['jobs'])
             assert db.get_pipeline_state('classifier') == {}, 'an oversized cycle must not pause every cycle'
-            assert all(row['next_attempt_at'] > (datetime.now() + timedelta(minutes=50)).strftime('%Y-%m-%d %H:%M:%S') for row in held['jobs'])
+            assert all(row['next_attempt_at'] > clock.after(50 * 60) for row in held['jobs'])
             checks = monitor.collect_checks()
             assert checks['classification_capacity'][0] and 'daily budget' in checks['classification_capacity'][1]
             assert not checks['classification_queue'][0], 'held-back work has its own alert'
@@ -192,7 +192,7 @@ def main():
                 with patch.object(client, 'request_bound', return_value=.01), \
                      patch.object(client.session, 'post', return_value=response(output(jobs6)[:-1])):
                     report = worker.process_batch(client, jobs6)
-                delay = (datetime.fromisoformat(report['jobs'][0]['next_attempt_at']) - datetime.now()).total_seconds()
+                delay = -clock.age_seconds(report['jobs'][0]['next_attempt_at'])
                 if attempt < config.CLASSIFIER_ALERT_AFTER_FAILURES:
                     assert delay <= config.CLASSIFIER_VALIDATION_RETRY_MAX_SECONDS + 5, (attempt, delay)
                 else:
@@ -276,7 +276,7 @@ def main():
             from core import timing
             with db.get_db() as conn:
                 db.record_latency('test', 'search_page', 1.5, {'new_jobs': 2})
-                stages = report_latency.stage_summary(conn, (datetime.now() - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S'))
+                stages = report_latency.stage_summary(conn, (clock.utcnow() - timedelta(hours=1)).strftime(clock.FORMAT))
                 assert 'enrichment/classify_request' in stages and 'enrichment/publish' in stages
                 assert 'test/search_page' in stages and stages['test/search_page'] == [1.5]
                 assert report_latency.cycle_totals(conn, '2999-01-01 00:00:00') == []
@@ -291,7 +291,7 @@ def main():
                 assert json.loads(rows[0][2]) == {'ok': True}
             print('PASS latency stages are recorded, aggregated and never break the pipeline')
 
-            now = datetime.now(); later = now + timedelta(seconds=config.PIPELINE_ALERT_RETRY_SECONDS + 1)
+            now = clock.utcnow(); later = now + timedelta(seconds=config.PIPELINE_ALERT_RETRY_SECONDS + 1)
             with patch.object(telegram, 'notify_failure', side_effect=[False, True, True]) as alert:
                 monitor.report_checks({'test':(True,'failure')}, now)
                 monitor.report_checks({'test':(True,'failure')}, now)
@@ -304,9 +304,9 @@ def main():
                 assert alert.call_count == 3
             with patch.object(config, 'LINKEDIN_ENABLED', False), patch.object(config, 'WUZZUF_ENABLED', False), patch.object(config, 'INDEED_ENABLED', False):
                 db.touch_worker('enrichment', 'idle'); db.touch_worker('delivery', 'idle')
-                checks = monitor.collect_checks(now=datetime.now())
+                checks = monitor.collect_checks(now=clock.utcnow())
                 assert not checks['worker_enrichment'][0] and not checks['worker_delivery'][0]
-                checks = monitor.collect_checks(now=datetime.now()+timedelta(seconds=config.PIPELINE_WORKER_STALE_SECONDS+1))
+                checks = monitor.collect_checks(now=clock.utcnow()+timedelta(seconds=config.PIPELINE_WORKER_STALE_SECONDS+1))
                 assert checks['worker_enrichment'][0] and checks['worker_delivery'][0]
             with patch.object(config, 'HEALTHCHECK_URL', 'https://example.invalid/heartbeat'), \
                  patch.object(monitor, 'collect_checks', return_value={'bad':(True,'degraded')}), \

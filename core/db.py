@@ -3,11 +3,10 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 
 from config import (DB_PATH, ENRICHMENT_ENABLED, ENRICHMENT_SCHEMA_VERSION,
                     NOTIFY_BATCH_SIZE, NOTIFY_PER_CHANNEL_LIMIT, CLASSIFIER_RETRY_MAX_SECONDS)
-from core import wakeup
+from core import clock, wakeup
 
 _active_scrape_batch = None  # Set only by this process's orchestrator.
 
@@ -136,8 +135,40 @@ CREATE INDEX IF NOT EXISTS idx_latency_stage ON latency_events(stage, recorded_a
 """
 
 
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Stored timestamps are UTC (core/clock.py); only jobs.posted_at is local.
+now_str = clock.now_str
+
+# PRAGMA user_version 1: operational timestamps converted from local to UTC.
+_SCHEMA_VERSION = 1
+_UTC_COLUMNS = {
+    "jobs": ("scraped_at", "notified_at", "next_notify_at"),
+    "runs": ("started_at", "finished_at"),
+    "job_enrichments": ("next_attempt_at", "updated_at", "created_at"),
+    "enrichment_cache": ("created_at",),
+    "scrape_health": ("first_seen_at", "last_seen_at", "last_alert_at"),
+    "pipeline_state": ("updated_at",),
+    "pipeline_alerts": ("first_seen_at", "last_seen_at", "last_alert_at", "next_alert_at"),
+    "scrape_batches": ("started_at", "finished_at"),
+    "enrichment_requests": ("started_at", "finished_at"),
+    "latency_events": ("recorded_at",),
+}
+_TIMESTAMP_GLOB = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]*"
+
+
+def _migrate_local_timestamps_to_utc(conn):
+    """One-time conversion of local wall-time strings to UTC, in SQL.
+
+    SQLite's 'utc' modifier applies this process's TZ rules (TZ=Africa/Cairo
+    in compose), DST included. Empty deadlines ('' = due now) and NULLs stay.
+    """
+    for table, columns in _UTC_COLUMNS.items():
+        for column in columns:
+            conn.execute(f"UPDATE {table} SET {column}=datetime({column},'utc') "
+                         f"WHERE {column} GLOB ?", (_TIMESTAMP_GLOB,))
+    conn.execute("UPDATE pipeline_state SET value=json_set(value,'$.pause_until',"
+                 "datetime(json_extract(value,'$.pause_until'),'utc')) "
+                 "WHERE json_valid(value) AND json_extract(value,'$.pause_until') GLOB ?",
+                 (_TIMESTAMP_GLOB,))
 
 
 @contextmanager
@@ -200,6 +231,11 @@ def init_db():
                      "ON jobs(posted_at, id) WHERE notified = 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_source_id ON runs(source,id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_batch ON job_enrichments(batch_id,state)")
+        # Versioned, transactional migrations: the first process to start a
+        # new release converts once; the others wait on BEGIN IMMEDIATE.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
+            _migrate_local_timestamps_to_utc(conn)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +364,7 @@ def defer_notification(job_id: int, minimum_delay: float = 0):
         row = conn.execute("SELECT notify_attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
             seconds = max(minimum_delay, min(3600, 60 * 2 ** min(row[0], 6)))
-            retry_at = (datetime.now() + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            retry_at = clock.after(seconds)
             conn.execute("UPDATE jobs SET notify_attempts = notify_attempts + 1, next_notify_at = ? WHERE id = ?",
                          (retry_at, job_id))
 
@@ -465,8 +501,7 @@ def quarantine_enrichments(entries: list[tuple[int, str]]):
 
 
 def retry_enrichment(job_id: int, attempts: int, error: str, retry_at: str | None = None):
-    retry_at = retry_at or (datetime.now() + timedelta(seconds=min(
-        CLASSIFIER_RETRY_MAX_SECONDS, 60 * 2 ** min(attempts, 10)))).strftime("%Y-%m-%d %H:%M:%S")
+    retry_at = retry_at or clock.after(min(CLASSIFIER_RETRY_MAX_SECONDS, 60 * 2 ** min(attempts, 10)))
     with get_db() as conn:
         conn.execute("UPDATE job_enrichments SET attempts=?, next_attempt_at=?, error=?, updated_at=? WHERE job_id=?",
                      (attempts, retry_at, error, now_str(), job_id))
