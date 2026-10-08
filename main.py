@@ -120,6 +120,7 @@ def main() -> int:
 
 def _run_boards() -> int:
     total_new = 0
+    failed = False
     for board_cls in BOARDS:
         # Check the class attribute FIRST so a disabled board can never
         # abort startup over a missing selectors.json.
@@ -129,16 +130,18 @@ def _run_boards() -> int:
 
         try:
             board = board_cls()
-        except FileNotFoundError as e:
-            logger.error("Board config missing: %s", e)
-            from core import telegram
-
-            telegram.notify_failure(f"{board_cls.name}: selector configuration missing", str(e),
-                                    hint="Restore markup/<board>/selectors.json before the next run.")
-            sys.exit(1)
+        except (FileNotFoundError, ValueError) as e:
+            # markup/ is bind-mounted and live-editable: a missing file or a
+            # JSON typo skips only this board instead of the whole cycle.
+            logger.error("Board '%s' selector config unusable: %s", board_cls.name, e)
+            _record_config_health(board_cls.name, e)
+            failed = True
+            continue
+        _record_config_health(board.name, None)
 
         db.touch_worker("scraper", board.name)
         logger.info("Running board: %s", board.name)
+        gained = 0  # the timing detail must not report the previous board's count
         try:
             with timing.stage("scraper", "board_run", lambda: {"board": board.name, "new": gained}):
                 gained = board.run()
@@ -159,12 +162,30 @@ def _run_boards() -> int:
             from core import telegram
 
             telegram.notify_failure(f"Board '{board.name}' crashed", str(e))
+            failed = True
             if _shutting_down:
                 raise SystemExit(0)
 
     logger.info("Done. New jobs this run: %s", total_new)
 
-    return 0
+    # Non-zero exit marks the run failed in `docker logs ofelia`.
+    return 1 if failed else 0
+
+
+def _record_config_health(name: str, error: Exception | None):
+    """Selector-config health with the usual once-per-episode alert dedupe."""
+    from core.scrape_health import ScrapeHealth
+
+    health = ScrapeHealth(name)
+    if error is None:
+        health.check("selectors_config", True)
+    else:
+        run_id = db.start_run(name)
+        db.finish_run(run_id, "config_error", error=f"{type(error).__name__}: {error}"[:500])
+        health.check("selectors_config", False,
+                     f"markup/{name}/selectors.json is missing or not valid JSON "
+                     f"({type(error).__name__}: {error}). This board is skipped until it is fixed.")
+    health.report(require_search=False)
 
 
 if __name__ == "__main__":

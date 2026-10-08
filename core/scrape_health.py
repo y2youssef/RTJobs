@@ -64,13 +64,14 @@ class ScrapeHealth:
             self.check("field_company", missing * 2 < len(jobs),
                        f"Company missing on {missing}/{len(jobs)} parsed jobs.", html)
 
-    def report(self):
+    def report(self, require_search: bool = True):
         """One error-channel message for new failures; retry unsuccessful alerts.
 
         Persist small diagnostics only. Sanitized snapshots strip scripts; they
         are selector evidence, not full embedded JSON or account-state dumps.
+        require_search=False reports checks made outside a spider run.
         """
-        if "search_fetch" not in self.checks:
+        if require_search and "search_fetch" not in self.checks:
             self.check("search_fetch", False, "The spider completed without parsing a search response.")
         with db.get_db() as conn:
             previous = {r["check_name"]: dict(r) for r in conn.execute(

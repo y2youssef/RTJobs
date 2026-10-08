@@ -444,8 +444,10 @@ class IndeedJobSpider(Spider):
             title = await page.title()
         except Exception:
             title = ""
-        if ("Just a moment" in title or "Blocked" in title
-                or "Access Denied" in html):
+        # Job text can contain "Access Denied" (security roles, snippets), so
+        # the body marker only counts when the job-card data is absent.
+        if ("Just a moment" in title or "Blocked" in title or "Access Denied" in title
+                or ("Access Denied" in html and not _CARDS_MARKER.search(html))):
             logger.info(f"[indeed] Block page instead of search (title {title!r}).")
             markup.save_snapshot("indeed", "blocked_page", html)
             self._blocked = True

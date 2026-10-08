@@ -340,6 +340,14 @@ def verify(directory):
         with patch.object(db, "seen_ids_for", return_value={j["external_id"] for j in cards}):
             await good.scan_search_page(FixturePage(search))
         assert not good._page_jobs and all(c["good"] for c in good.health.checks.values())
+        # "Access Denied" inside job text is not a block page while job cards exist.
+        snippet = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
+        with patch.object(db, "seen_ids_for", return_value=set()):
+            await snippet.scan_search_page(FixturePage(search + "<p>Access Denied handling for IAM roles</p>"))
+        assert not snippet._blocked and snippet._page_jobs
+        blocked_page = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
+        await blocked_page.scan_search_page(FixturePage("<html><body>Access Denied</body></html>"))
+        assert blocked_page._blocked
         from boards.linkedin.scraper import LinkedInJobSpider
         class MissingCardsPage(FixturePage):
             async def wait_for_selector(self, *args, **kwargs): raise TimeoutError("changed selector")
@@ -472,6 +480,27 @@ def verify_first_page_and_schedule():
         entry._start_next_cycle_now()
     assert execv.call_args.args[1][1:] == ["main.py", "--scheduled"]
     print("PASS first page only (all cards, no Indeed detail cap), overrun chains the next cycle after releasing the lock")
+
+    # A broken selectors.json (live-editable bind mount) skips only that board,
+    # alerts once per episode, and the exit code reports the failure.
+    ran = []
+    class Broken:
+        name, enabled = "wuzzuf", True
+        def __init__(self): raise ValueError("Expecting ',' delimiter: line 3 column 5")
+    class Healthy:
+        name, enabled = "indeed", True
+        def run(self): ran.append(self.name); return 1
+    from core import telegram as tg
+    with patch.object(entry, "BOARDS", [Broken, Healthy]), patch.object(entry, "ENRICHMENT_ENABLED", True), \
+            patch.object(tg, "notify_failure", return_value=True) as alert:
+        assert entry._run_boards() == 1 and ran == ["indeed"]
+        assert entry._run_boards() == 1 and ran == ["indeed", "indeed"]
+        assert alert.call_count == 1 and "selectors.json" in alert.call_args.args[1]
+    with entry.db.get_db() as conn:
+        assert conn.execute("SELECT status FROM runs WHERE source='wuzzuf' ORDER BY id DESC LIMIT 1").fetchone()[0] == "config_error"
+    with patch.object(entry, "BOARDS", [Healthy]), patch.object(entry, "ENRICHMENT_ENABLED", True):
+        assert entry._run_boards() == 0
+    print("PASS broken selectors skip only their board, alert once, non-zero exit")
 
 
 def verify_linkedin_login():
