@@ -16,7 +16,9 @@ from config import (
     CHROME_DEBUG_PORT,
     HEADLESS,
     KILL_CHROME_ON_START,
+    LINKEDIN_EMAIL,
     LINKEDIN_ENABLED,
+    LINKEDIN_PASSWORD,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PROFILE_DIR,
     LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
@@ -42,6 +44,14 @@ class LinkedInBoard(JobBoard):
     def run(self) -> int:
         run_id = db.start_run(self.name)
 
+        # LinkedIn rejected these credentials (or none are set): retrying them
+        # can only get the account restricted. Changing them unlocks this.
+        if login_state.credentials_locked(LINKEDIN_EMAIL, LINKEDIN_PASSWORD):
+            logger.warning("[linkedin] Skipping run — the configured credentials were rejected."
+                           " Update LINKEDIN_EMAIL/LINKEDIN_PASSWORD or run --reset-login.")
+            db.finish_run(run_id, "credentials_rejected")
+            return 0
+
         # Cooldown active — don't even start the browser. (Also re-checked
         # inside page_action as a safety net.)
         if login_state.is_blocked():
@@ -50,12 +60,13 @@ class LinkedInBoard(JobBoard):
             db.finish_run(run_id, "blocked")
             return 0
 
-        # Maxed retries + cooldown expired -> fresh login. The profile must
-        # be wiped BEFORE the browser starts (never from under a live Chrome).
+        # Maxed retries + cooldown expired -> one fresh login per failure
+        # streak (never after a checkpoint). The profile must be wiped BEFORE
+        # the browser starts (never from under a live Chrome).
         if login_state.should_wipe_profile():
-            logger.info("[linkedin] Cooldown over, retry count maxed — wiping profile.")
+            logger.info("[linkedin] Cooldown over, retry count maxed — wiping profile once.")
             login.wipe_profile()
-            login_state.reset_retries()
+            login_state.mark_profile_wiped()
 
         # Clean up zombie Chrome from crashed runs — must happen BEFORE we
         # start our own browser (inside a page_action it would kill itself).

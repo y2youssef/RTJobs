@@ -362,6 +362,104 @@ def verify(directory):
                     assert bool(row[2]) == (not healthy)
     print("PASS loading-screen diagnosis and degraded run status with partial data preserved")
     verify_browser_recovery()
+    verify_linkedin_login()
+
+
+def verify_linkedin_login():
+    """Rejected credentials stop logins; checkpoints never wipe; one wipe per streak."""
+    import boards.linkedin as li_board
+    from boards.linkedin import login
+    from boards.base import load_board_selectors
+    from core import login_state, markup
+    sel = load_board_selectors("linkedin")
+
+    class Element:
+        def __init__(self, text, visible=True): self.text, self.visible = text, visible
+        def is_visible(self): return self.visible
+        def text_content(self): return self.text
+    class Locator:
+        def __init__(self, elements): self.elements = elements
+        def all(self): return self.elements
+    class Page:
+        def __init__(self, url, errors=(), redirect_to=None):
+            self.url, self.errors, self.redirect_to = url, list(errors), redirect_to
+        def locator(self, _css): return Locator(self.errors)
+        def wait_for_url(self, pattern, timeout=None, wait_until=None):
+            assert wait_until == "commit", "LinkedIn never fires load"
+            if self.redirect_to:
+                self.url = self.redirect_to
+            if not pattern.search(self.url):
+                raise TimeoutError("still on the sign-in form")
+        def wait_for_timeout(self, _ms): pass
+        def content(self): return "<html></html>"
+
+    with ExitStack() as stack:
+        alerts = stack.enter_context(patch.object(login, "notify_failure", return_value=True))
+        stack.enter_context(patch.object(markup, "save_snapshot", return_value="test/login.html"))
+        stack.enter_context(patch.object(login, "LINKEDIN_EMAIL", "user@example.com"))
+        stack.enter_context(patch.object(login, "LINKEDIN_PASSWORD", "old-password"))
+        stack.enter_context(patch.object(li_board, "LINKEDIN_EMAIL", "user@example.com"))
+        stack.enter_context(patch.object(li_board, "LINKEDIN_PASSWORD", "old-password"))
+        login_state.reset_retries()
+
+        # An active session whose /login -> /feed redirect lands after
+        # DOMContentLoaded is logged in, never a failure (Sep-Oct snapshots).
+        late = Page("https://www.linkedin.com/login", redirect_to="https://www.linkedin.com/feed/")
+        assert login.ensure_logged_in(late, sel) and login_state.get_retry_count() == 0
+        # A failure path that finds the feed after settling reports success.
+        assert login._fail(Page("https://www.linkedin.com/feed/"), "other", "automation error")
+        assert login_state.get_retry_count() == 0 and not alerts.called
+
+        # Hidden or empty error placeholders are not a rejection.
+        quiet = Page("https://www.linkedin.com/login", errors=[Element("Wrong password", visible=False), Element("  ")])
+        assert login._classify(quiet, sel) is None and not login_state.credentials_locked("user@example.com", "old-password")
+
+        # A visible rejection locks logins with one alert; the board skips Chrome.
+        rejected = Page("https://www.linkedin.com/login", errors=[Element("Wrong email or password. Try again.")])
+        assert login._classify(rejected, sel) is False
+        assert alerts.call_count == 1 and "rejected" in alerts.call_args.args[0]
+        assert "Wrong email or password" in alerts.call_args.args[1]
+        with patch.object(li_board, "chrome_session", side_effect=AssertionError("Chrome must not start")):
+            for _ in range(3):
+                assert li_board.LinkedInBoard().run() == 0
+        with login_state.db.get_db() as conn:
+            assert conn.execute("SELECT status FROM runs WHERE source='linkedin' ORDER BY id DESC LIMIT 1").fetchone()[0] == "credentials_rejected"
+        assert alerts.call_count == 1, "a rejected login must alert once, not every run"
+        assert "old-password" not in login_state.db.get_state(login_state.REJECTED_KEY)
+        # Changed credentials release the lock and the streak by themselves.
+        assert not login_state.credentials_locked("user@example.com", "new-password")
+        assert login_state.db.get_state(login_state.REJECTED_KEY) == ""
+        login_state.lock_credentials("user@example.com", "new-password")
+        login_state.reset_retries()  # --reset-login also clears it
+        assert not login_state.credentials_locked("user@example.com", "new-password")
+
+        def expire_cooldown():
+            login_state.db.set_state(login_state.BLOCKED_KEY, 0)
+
+        # Unsolved checkpoints keep cooling down but never wipe the profile.
+        for _ in range(4):
+            login._register_failure("checkpoint", "checkpoint unresolved")
+            expire_cooldown()
+        assert login_state.max_retries_reached() and not login_state.should_wipe_profile()
+        assert "checkpoint is involved" in alerts.call_args.args[1]
+        login_state.reset_retries()
+
+        # Other failures earn exactly one wipe per streak, then cooldowns only.
+        alerts.reset_mock()
+        for _ in range(3):
+            login._register_failure("other", "automation error")
+        assert alerts.call_count == 1 and "wiped once" in alerts.call_args.args[1]
+        expire_cooldown()
+        assert login_state.should_wipe_profile()
+        login_state.mark_profile_wiped()
+        for _ in range(5):
+            login._register_failure("other", "automation error")
+            expire_cooldown()
+        assert not login_state.should_wipe_profile()
+        assert alerts.call_count == 2 and "already failed" in alerts.call_args.args[1]
+        login_state.reset_retries()
+    print("PASS LinkedIn login: late feed redirect, credential lock, checkpoint never wipes, one wipe per streak")
+
 
 
 def verify_browser_recovery():

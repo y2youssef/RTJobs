@@ -49,14 +49,14 @@ def main() -> int:
     setup_logging()
     _install_signal_handlers()
 
-    # Manual recovery: clear the login retry/cooldown state.
-    #   python main.py --reset-login
+    db.init_db()
+
+    # Manual recovery: clear the LinkedIn retry/cooldown state and any
+    # rejected-credentials lock.   python main.py --reset-login
     if "--reset-login" in sys.argv:
         login_state.reset_retries()
-        logger.info("Login retry state reset — next run will attempt login.")
+        logger.info("LinkedIn login state reset (retries, cooldown, credential lock) — next run will attempt login.")
         return 0
-
-    db.init_db()
 
     # Anchor for container cold-start latency: the gap between ofelia's
     # 6-minute grid and this entry covers docker start + xvfb + imports.

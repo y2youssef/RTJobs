@@ -79,7 +79,16 @@ description, link, extra(dict), scraped_at`.
    (15 jobs/page). Stop condition: first `external_id` already in
    `seen_ids` (default sort is by date). Job id = first hyphen-separated component of the
    slug: `/jobs/p/<id>-<slug>`.
-5. **LinkedIn login**: fetch `https://www.linkedin.com/login`, fill with
+5. **LinkedIn login**: `page_action` runs right after DOMContentLoaded, BEFORE
+   an active session's `/login -> /feed` redirect lands (scrapling's `wait`
+   only starts after page_action) — `_wait_for_landing` must run before judging
+   the URL, and every failure path re-checks `/feed` (`_fail`); all saved
+   login_failure snapshots up to Oct 2026 were the Feed page. `wait_for_url`
+   needs `wait_until="commit"` (default waits for `load`). A visible sign-in
+   error locks logins until the credentials change (salted fingerprint in
+   login_state) or `--reset-login`; checkpoints never wipe the profile; other
+   failures get at most one wipe per streak (core/login_state.py).
+   Fetch `https://www.linkedin.com/login`, fill with
    human-like typing (EN+AR aware), then `_verify_routing` waits
    event-based via `page.wait_for_url` for `(feed|/jobs|checkpoint|security_verification)`
    — do NOT put `login` in that pattern (current URL matches it instantly).

@@ -370,7 +370,7 @@ passing a channel check alone does not activate them.
 | Times in DB off by hours | Container TZ defaults to UTC — compose pins `TZ=Africa/Cairo` (AGENTS.md:6e). |
 | `docker stop` leaves zombies | Fixed by `main.py` SIGTERM handler (`stop_chrome` + `finish_run` interrupted) + `init: true`. `kill_zombie_chrome` is now safety-net only. |
 | No failure alerts | Check `TELEGRAM_TEST_ID`/`TELEGRAM_FAILURE_CHAT_ID` is a chat the bot can post to. |
-| Stuck "blocked" state | `python main.py --reset-login` (or: `sqlite3 /data/rtjobs.db "UPDATE login_state SET value='0' WHERE key IN ('retry_count','blocked_until','max_retries_alerted');"`) |
+| Stuck "blocked" state / "LinkedIn rejected the login credentials" | Fix `.env` and recreate the scraper (`docker compose up -d scraper`) — changed credentials unlock automatically. Otherwise `docker compose run --rm scraper python main.py --reset-login` clears retries, cooldown and the credential lock. |
 | Chrome won't start in container | Profile lock from a crash: `KILL_CHROME_ON_START=true` handles it; otherwise `docker compose down && docker compose up -d`. |
 | Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead and heavy resources are dropped (see `core/browser.py:patch_no_load_wait`). |
 | Login keeps failing after site change | Check the newest `markup/linkedin/snapshots/login_failure/*.html` and update `selectors.json`. |

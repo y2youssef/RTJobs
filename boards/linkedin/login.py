@@ -29,6 +29,9 @@ SIGN_IN_BUTTON = re.compile(r"^(Sign in|تسجيل الدخول)$")
 # matching /jobs here would treat a guest session as logged in.
 _FEED_OK = re.compile(r"/feed")
 _CHECKPOINT = re.compile(r"(checkpoint|security_verification|challenge)")
+# Destinations that end the post-load redirect wait (never "login": the
+# current URL already matches it).
+_LANDED = re.compile(r"(/feed|checkpoint|security_verification|challenge)")
 
 
 def kill_zombie_chrome():
@@ -64,11 +67,38 @@ def _is_logged_in(page) -> bool:
     return bool(_FEED_OK.search(page.url))
 
 
-def _login_error_visible(page, selectors: dict) -> bool:
+def _login_error_text(page, selectors: dict) -> str:
+    """Text of a VISIBLE, non-empty sign-in error, else "".
+
+    A rejected login now pauses all automatic logins, so hidden/empty error
+    placeholders in the form markup must never count as a rejection.
+    """
     try:
-        return page.locator(selectors["login"]["error"]).count() > 0
+        for element in page.locator(selectors["login"]["error"]).all()[:5]:
+            if element.is_visible():
+                text = " ".join((element.text_content() or "").split())
+                if text:
+                    return text[:200]
     except Exception:
-        return False
+        pass
+    return ""
+
+
+def _wait_for_landing(page, timeout_ms: int = 8_000) -> None:
+    """Let the /login -> /feed redirect of an active session settle.
+
+    page_action runs right after DOMContentLoaded (scrapling's `wait` only
+    starts afterwards), before LinkedIn routes an active session to /feed.
+    Judging page.url that early mistook live sessions for logged-out ones:
+    every saved login_failure snapshot (Sep-Oct 2026) is the Feed page.
+    wait_until="commit": LinkedIn never fires `load` (Gotchas #1).
+    """
+    if _is_logged_in(page) or _on_checkpoint(page.url):
+        return
+    try:
+        page.wait_for_url(_LANDED, timeout=timeout_ms, wait_until="commit")
+    except Exception:
+        pass  # Still on the sign-in form: a genuine logged-out session.
 
 
 def _handle_checkpoint(page, selectors: dict) -> bool:
@@ -94,39 +124,77 @@ def _handle_checkpoint(page, selectors: dict) -> bool:
     logger.warning("[login] Checkpoint not solved in time — aborting run.")
     notify_failure(
         "LinkedIn checkpoint unresolved",
-        "Manual solve timed out. The next scheduled run will retry.",
+        "Manual solve timed out. The next scheduled run will retry"
+        " (the profile is never wiped over a checkpoint).",
     )
-    _register_failure("checkpoint unresolved", snapshot)
+    _register_failure("checkpoint", "checkpoint unresolved", snapshot)
     return False
 
 
-def _register_failure(reason: str, snapshot: str | None = None):
-    count = login_state.record_failure()
+def _register_failure(kind: str, reason: str, snapshot: str | None = None,
+                      error_text: str = ""):
+    """Record one failed login attempt; see core.login_state for the kinds."""
+    if kind == "credentials":
+        login_state.lock_credentials(LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
+        logger.warning(f"[login] {reason} — automatic logins paused until the credentials change.")
+        missing = not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD
+        notify_failure(
+            "LinkedIn credentials missing" if missing else "LinkedIn rejected the login credentials",
+            ("LINKEDIN_EMAIL / LINKEDIN_PASSWORD are not set and the saved session has expired."
+             if missing else
+             "LinkedIn showed a sign-in error for the configured account"
+             + (f': "{error_text}"' if error_text else "") + ".")
+            + "\n\nAutomatic logins are paused so repeated failed attempts cannot get the"
+            " account restricted. They resume by themselves once the credentials change.",
+            snapshot,
+            hint="Fix LINKEDIN_EMAIL/LINKEDIN_PASSWORD in .env and recreate the scraper"
+                 " (docker compose up -d scraper), or run: python main.py --reset-login",
+        )
+        return
+
+    count = login_state.record_failure(checkpoint=(kind == "checkpoint"))
     logger.warning(f"[login] Failure ({reason}). Consecutive failures: {count}")
 
     if login_state.max_retries_reached() and not login_state.alert_already_sent():
         login_state.mark_alert_sent()
         cooldown = login_state.remaining_seconds()
+        if login_state.wipe_pending():
+            next_step = "After the cooldown the profile is wiped once and login retried from scratch."
+        elif login_state.streak_had_checkpoint():
+            next_step = ("Logins continue after each cooldown (max 30 min); the profile is not"
+                         " wiped because a security checkpoint is involved.")
+        else:
+            next_step = ("Logins continue after each cooldown (max 30 min); the profile is not"
+                         " wiped again because a fresh profile already failed.")
         notify_failure(
             "LinkedIn login failing repeatedly",
             f"{count} consecutive failures — scraping is now blocked for"
-            f" ~{cooldown // 60} minutes. After the cooldown the profile will"
-            " be wiped and login retried from scratch.\n\n"
-            "Check credentials or whether LinkedIn triggered a checkpoint.",
+            f" ~{cooldown // 60} minutes. {next_step}\n\n"
+            "Check whether LinkedIn needs a manual checkpoint solve.",
             snapshot,
         )
 
 
-def _capture_failure(page) -> str | None:
-    """Snapshot the page for debugging, letting the DOM settle first."""
+def _fail(page, kind: str, reason: str, error_text: str = "") -> bool:
+    """Register a failure unless the session turned out to be active.
+
+    Lets the DOM (or a late /feed redirect) settle first; returns True when
+    the page landed on the feed after all, so callers can report success.
+    """
     try:
         page.wait_for_timeout(1500)
     except Exception:
         pass
+    if _is_logged_in(page):
+        logger.info(f"[login] Session is active after all ({reason}) — not a failure.")
+        login_state.reset_retries()
+        return True
     try:
-        return markup.save_snapshot("linkedin", "login_failure", page.content())
+        snapshot = markup.save_snapshot("linkedin", "login_failure", page.content())
     except Exception:
-        return None
+        snapshot = None
+    _register_failure(kind, reason, snapshot, error_text)
+    return False
 
 
 def _click_role_button(page, name_pattern: re.Pattern) -> bool:
@@ -176,10 +244,8 @@ def _ensure_username_visible(page, selectors: dict):
 
 def _do_login(page, selectors: dict) -> bool:
     if not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD:
-        notify_failure(
-            "LinkedIn credentials missing",
-            "Set LINKEDIN_EMAIL / LINKEDIN_PASSWORD in .env.",
-        )
+        # Locks like a rejection, so the alert is sent once, not every run.
+        _register_failure("credentials", "credentials missing")
         return False
 
     logger.info("[login] Filling credentials...")
@@ -214,9 +280,7 @@ def _do_login(page, selectors: dict) -> bool:
         login_btn.click()
     except Exception as e:
         logger.warning(f"[login] Input automation error: {e}")
-        snapshot = _capture_failure(page)
-        _register_failure("automation error", snapshot)
-        return False
+        return _fail(page, "other", "automation error")
 
     return _verify_routing(page, selectors)
 
@@ -232,11 +296,10 @@ def _classify(page, selectors: dict) -> bool | None:
     if _on_checkpoint(page.url):
         return _handle_checkpoint(page, selectors)
 
-    if _login_error_visible(page, selectors):
-        logger.warning("[login] Invalid credentials.")
-        snapshot = _capture_failure(page)
-        _register_failure("invalid credentials", snapshot)
-        return False
+    error_text = _login_error_text(page, selectors)
+    if error_text:
+        logger.warning("[login] LinkedIn rejected the credentials.")
+        return _fail(page, "credentials", "credentials rejected", error_text)
 
     return None
 
@@ -250,16 +313,18 @@ def _verify_routing(page, selectors: dict) -> bool:
 
     NOTE: do NOT include 'login' in the wait pattern — the current URL
     already contains it, so wait_for_url would return instantly before the
-    navigation completes.
+    navigation completes. wait_until="commit": the default waits for the
+    `load` event LinkedIn never fires, which burned the whole timeout on
+    every successful login.
     """
     logger.info("[login] Verifying routing after submit...")
-    dest = re.compile(r"(feed|/jobs|checkpoint|security_verification)")
+    dest = re.compile(r"(feed|/jobs|checkpoint|security_verification|challenge)")
 
     # Two event-driven waits back-to-back: the error message usually appears
     # within the first window, a slow navigation gets caught by the second.
     for timeout in (15_000, 15_000):
         try:
-            page.wait_for_url(dest, timeout=timeout)
+            page.wait_for_url(dest, timeout=timeout, wait_until="commit")
         except Exception:
             pass  # TimeoutError — still on the login form
 
@@ -268,20 +333,23 @@ def _verify_routing(page, selectors: dict) -> bool:
             return outcome
 
     logger.warning(f"[login] Unexpected landing page: {page.url}")
-    snapshot = _capture_failure(page)
-    _register_failure(f"unexpected landing: {page.url}", snapshot)
-    return False
+    return _fail(page, "other", f"unexpected landing: {page.url}")
 
 
 def ensure_logged_in(page, selectors: dict) -> bool:
     """Entry point (used as page_action). Returns True if ready to scrape."""
     from core import timing
 
+    if login_state.credentials_locked(LINKEDIN_EMAIL, LINKEDIN_PASSWORD):
+        logger.info("[login] Configured credentials were rejected — not attempting a login.")
+        return False
+
     if login_state.is_blocked():
         remaining = login_state.remaining_seconds()
         logger.info(f"[login] Blocked for another {remaining}s — skipping run.")
         return False
 
+    _wait_for_landing(page)
     if _is_logged_in(page):
         logger.info("[login] Session already active.")
         login_state.reset_retries()
