@@ -86,8 +86,10 @@ docker compose up -d          # builds image, starts ofelia scheduler
 docker compose logs -f scraper
 ```
 
-- `ofelia` triggers the scraper container **every 6 minutes** (edit
-  `ofelia.job-run.scraper.schedule` in `docker-compose.yaml`).
+- `ofelia` triggers the scraper container **every 3 minutes** (set
+  `SCRAPE_INTERVAL_MINUTES` in `.env`; it must divide 60). Each run scrapes the
+  first search page of every board. A run that outlasts the interval starts
+  the next one immediately instead of waiting for the following tick.
 - Chrome runs headful on a virtual display (`xvfb-run`) with remote debugging
   enabled.
 - Persisted in named volumes: `chrome_profile` (login session), `scraper_data`

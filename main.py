@@ -1,16 +1,24 @@
-"""RTJobs orchestrator: run every enabled job board, persist jobs, notify."""
+"""RTJobs orchestrator: run every enabled job board, persist jobs, notify.
+
+Scheduled runs (`--scheduled`, compose) are started by ofelia every
+SCRAPE_INTERVAL_MINUTES with no-overlap. A cycle that runs past the next tick
+made ofelia skip that tick, so it starts the next cycle immediately in a fresh
+process instead of idling until the tick after (`_start_next_cycle_now`).
+"""
 
 import fcntl
 import logging
+import os
 import signal
 import sys
+import time
 
 from boards.linkedin import LinkedInBoard
 from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
 from core import db, login_state, timing
 from core.log import setup_logging
-from config import DB_PATH, ENRICHMENT_ENABLED
+from config import DB_PATH, ENRICHMENT_ENABLED, SCRAPE_INTERVAL_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +53,33 @@ BOARDS = [
 ]
 
 
+def _missed_tick(launched: float, now: float, minutes: int = SCRAPE_INTERVAL_MINUTES) -> bool:
+    """True when a scheduler tick fell inside this run.
+
+    Ofelia's "*/N" ticks sit on epoch multiples of N minutes (N divides 60,
+    enforced in config), so a tick passed iff the run crossed one.
+    """
+    period = minutes * 60
+    return int(now // period) > int(launched // period)
+
+
+def _start_next_cycle_now():
+    """Replace this process with a fresh cycle (same PID, same container run).
+
+    exec keeps ofelia's execution alive, so no-overlap keeps skipping ticks,
+    while the new interpreter reloads blocklist/config like a normal start.
+    The scraper lock was released when its file closed (fds are CLOEXEC).
+    """
+    logger.info("Cycle overran the %s-minute schedule — starting the next cycle now.",
+                SCRAPE_INTERVAL_MINUTES)
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 def main() -> int:
+    launched = time.time()
     setup_logging()
     _install_signal_handlers()
 
@@ -59,7 +93,7 @@ def main() -> int:
         return 0
 
     # Anchor for container cold-start latency: the gap between ofelia's
-    # 6-minute grid and this entry covers docker start + xvfb + imports.
+    # grid and this entry covers docker start + xvfb + imports.
     timing.record("scraper", "process_start", 0)
 
     # Serialize manual runs too: a cycle must never close another live scrape.
@@ -75,10 +109,13 @@ def main() -> int:
             db.touch_worker('scraper', 'scraping')
             result = _run_boards()
             interrupted = False
-            return result
         finally:
             db.finish_scrape_batch(batch_id, interrupted=interrupted)
             db.touch_worker('scraper', 'idle')
+
+    if "--scheduled" in sys.argv and _missed_tick(launched, time.time()):
+        _start_next_cycle_now()
+    return result
 
 
 def _run_boards() -> int:

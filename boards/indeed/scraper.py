@@ -41,9 +41,6 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://eg.indeed.com"
 
-# Cap per run: each new job means one extra detail-page navigation.
-_MAX_DETAIL_FETCHES = 10
-
 _CARDS_MARKER = re.compile(
     r'window\.mosaic\.providerData\[\'?"?mosaic-provider-jobcards\'?"?\]\s*=\s*'
 )
@@ -521,13 +518,11 @@ class IndeedJobSpider(Spider):
         if self._logged_out or self._blocked:
             return
 
+        # Every new card on the (single) page gets its full description; the
+        # page itself bounds the detail navigations (~15).
         for job in self._page_jobs:
             key = job["external_id"]
-            if key in self._queued or len(self._queued) >= _MAX_DETAIL_FETCHES:
-                # Detail cap hit — keep the snippet as the description.
-                logger.warning(f"[indeed] Detail fetch skipped for {key} (cap reached)")
-                job["extra"]["detail_status"] = "cap_reached"
-                yield job
+            if key in self._queued:
                 continue
 
             self._pending[key] = job

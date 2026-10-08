@@ -38,6 +38,11 @@ class Enricher:
         self.prompt = (folder / "prompt.txt").read_text() + "\nCanonical taxonomy:\n" + json.dumps(self.taxonomy, ensure_ascii=False)
         self.version = hashlib.sha256((self.prompt + json.dumps(self.schema, sort_keys=True)).encode()).hexdigest()[:16]
         self.session = requests.Session()
+        # One fresh connection per request. Requests are minutes apart and the
+        # provider's edge drops idle keep-alive sockets after ~4 min: 50 of 75
+        # requests after >=240s idle (Oct 2026) failed instantly on a dead
+        # pooled socket, each costing a 2-minute retry. A handshake is ~0.5s.
+        self.session.headers["Connection"] = "close"
         self.pricing = None
         self.max_completion_tokens = None
         self.context_length = None

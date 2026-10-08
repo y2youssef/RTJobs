@@ -23,13 +23,16 @@ services:
       # cycles); keep full run logs in the volume next to the workers'.
       - LOG_FILE=/data/logs/scraper.log
       - KILL_CHROME_ON_START=true
+      # Same value drives ofelia's cron below (set it in .env; must divide 60).
+      - SCRAPE_INTERVAL_MINUTES=${SCRAPE_INTERVAL_MINUTES:-3}
     volumes:
       - chrome_profile:/app/chromeprofile
       - wuzzuf_profile:/app/wuzzufprofile
       - indeed_profile:/app/indeedprofile
       - scraper_data:/data
       - ./markup:/data/markup
-    command: ["xvfb-run", "-a", "python", "main.py"]
+    # --scheduled: a cycle that overruns a tick starts the next one at once.
+    command: ["xvfb-run", "-a", "python", "main.py", "--scheduled"]
     restart: "no"
 
   scheduler:
@@ -46,9 +49,12 @@ services:
     command: daemon --docker
     # job-run labels MUST be on the ofelia container itself (docs: only
     # job-exec may be defined on a target container). Seconds-first cron.
+    # no-overlap: ofelia watches the container until it exits, so a tick that
+    # lands mid-run is skipped cleanly (main.py then chains the next cycle).
     labels:
       ofelia.enabled: "true"
-      ofelia.job-run.scraper.schedule: "0 */6 * * * *"
+      ofelia.job-run.scraper.schedule: "0 */${SCRAPE_INTERVAL_MINUTES:-3} * * * *"
+      ofelia.job-run.scraper.no-overlap: "true"
       ofelia.job-run.scraper.container: "rtjobs"
       ofelia.job-run.scraper.delete: "false"
 

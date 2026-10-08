@@ -154,6 +154,11 @@ def main():
             with db.get_db() as conn:
                 leaked = conn.execute('SELECT amount FROM enrichment_spend').fetchone()[0]
             assert abs(leaked - before) < 1e-8, f'Offline retries leaked budget: {before} -> {leaked}'
+            assert failed['jobs'][0]['error'] == 'ConnectionError during classify'
+            # Never reuse an idle keep-alive socket (the provider drops them after ~4 min).
+            assert client.session.headers['Connection'] == 'close'
+            chained = requests.ConnectionError(OSError('Connection aborted.', ConnectionResetError(104, 'reset https://x/?k=secret')))
+            assert worker._cause_chain(chained) == 'ConnectionError<OSError<ConnectionResetError'
             db.set_pipeline_state('classifier', {})
             with patch.object(client, 'request_bound', return_value=.5), patch.object(client.session, 'post',
                     side_effect=lambda _u, **kw: response(output(json.loads(kw['json']['messages'][1]['content'])['jobs']))):

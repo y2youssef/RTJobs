@@ -31,6 +31,13 @@ HEADLESS = os.environ.get("HEADLESS", "false").lower() == "true"
 # via host networking (see docker-compose.yaml).
 CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", "9222"))
 
+# Scrape cadence. Compose feeds the same value to ofelia's "*/N" cron, and
+# main.py uses it to start the next cycle at once after an overrun. Must
+# divide 60 so ticks are evenly spaced on the clock.
+SCRAPE_INTERVAL_MINUTES = int(os.environ.get("SCRAPE_INTERVAL_MINUTES", "3"))
+if SCRAPE_INTERVAL_MINUTES < 1 or 60 % SCRAPE_INTERVAL_MINUTES:
+    raise ValueError("SCRAPE_INTERVAL_MINUTES must divide 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)")
+
 # Kill stray chrome processes before starting (container-only safety net)
 KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() == "true"
 

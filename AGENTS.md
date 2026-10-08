@@ -5,7 +5,7 @@ Headful job-board scraper. Scrapes LinkedIn (login-gated) and Wuzzuf
 (Cloudflare-gated) via [scrapling](https://scrapling.readthedocs.io) stealth
 browser sessions, persists jobs to SQLite, posts new jobs to one Telegram
 channel and failure alerts to another. Scheduled in Docker via ofelia
-(every 6 min). Chrome runs headful under Xvfb with CDP on port 9222 for
+(every `SCRAPE_INTERVAL_MINUTES`, default 3; ONE search page per board per run). Chrome runs headful under Xvfb with CDP on port 9222 for
 live debugging / manual 2FA solves.
 
 ## Commands
@@ -75,10 +75,13 @@ description, link, extra(dict), scraped_at`.
    salary, career level…). It is parsed from `page.content()` with marker
    regex + JSONDecoder.raw_decode (`_extract_state`) — NOT `page.evaluate`
    (evaluate silently failed under stealth isolated contexts).
-4. **Wuzzuf pagination** is a page index: `?q=&start=0`, `start=1`, …
-   (15 jobs/page). Stop condition: first `external_id` already in
-   `seen_ids` (default sort is by date). Job id = first hyphen-separated component of the
-   slug: `/jobs/p/<id>-<slug>`.
+4. **First page only, every card** (all boards, user decision Oct 2026): the
+   priority is delivery speed, and anything on page 2 is already minutes old
+   at a 3-minute cadence. Do NOT reintroduce pagination or a "stop at first
+   known card" rule — promoted/reposted cards would hide newer ones. Wuzzuf
+   pages are `?q=&start=0` (15 jobs); job id = first hyphen-separated
+   component of the slug: `/jobs/p/<id>-<slug>`. Indeed fetches the detail page
+   of EVERY new card (no cap).
 5. **LinkedIn login**: `page_action` runs right after DOMContentLoaded, BEFORE
    an active session's `/login -> /feed` redirect lands (scrapling's `wait`
    only starts after page_action) — `_wait_for_landing` must run before judging
@@ -113,7 +116,11 @@ description, link, extra(dict), scraped_at`.
    e. Container TZ defaults to UTC → posted_at/scraped_at off by 3h;
       compose pins `TZ=Africa/Cairo`.
 7. **ofelia**: `latest` is the 0.3.x line — cron strings NEED the leading
-   seconds field (`"0 */6 * * * *"`). `job-run` labels must be on the
+   seconds field (`"0 */3 * * * *"`, built from `SCRAPE_INTERVAL_MINUTES`,
+   which must divide 60). `no-overlap: "true"` skips a tick while a run is
+   still going (ofelia watches the container until it exits); `main.py
+   --scheduled` then execs the next cycle immediately instead of idling to the
+   tick after (`_missed_tick` / `_start_next_cycle_now`). `job-run` labels must be on the
    **ofelia** container itself (target-container labels only work for
    `job-exec`); with `container: rtjobs` and no image it does
    `docker start` on the exited one-shot container (same volumes/env), so
@@ -171,10 +178,10 @@ persists in the `indeed_profile` volume, re-login only on expiry with a
   prefix instead; ld+json is the fallback). `pubDate` is normalized to midnight —
   always prefer `createDate`. Verified live: logged-in scraping works (email-code
   login via Telegram assist, session in `indeed_profile` volume), CF solved via
-  profile clearance, detail cap `_MAX_DETAIL_FETCHES=10`/run (snippet placeholder
-  when skipped). Login flow details in INDEED.md "Login" (esp. the `;jsessionid`
+  profile clearance, full detail page for every new card (the old 10/run cap
+  was removed with the first-page-only change). Login flow details in INDEED.md "Login" (esp. the `;jsessionid`
   400 trap and the post-submit OAuth wait).
-- LinkedIn: logged-in scraping verified (pages of 25, detail panels,
+- LinkedIn: logged-in scraping verified (first page of 25, detail panels,
   dedupe against `seen_ids`); `posted_at` matches host local time.
 - Docker: python:3.13-slim + real Chrome + xvfb-run, `init: true`,
   `network_mode: host` on the scraper; volumes `chrome_profile`,

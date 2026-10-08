@@ -47,6 +47,22 @@ def _defer(jobs, error, preview, retry_at=None, attempted=True):
              'cached': False, 'error': error, 'next_attempt_at': retry_at} for job in jobs]
 
 
+def _cause_chain(exc: BaseException) -> str:
+    """Exception type names only, outermost first, e.g.
+    'ConnectionError<MaxRetryError<ProtocolError<RemoteDisconnected' — enough
+    to tell a stale socket from DNS/TLS/outage failures without persisting
+    messages, which can contain URLs."""
+    names, seen, current = [], set(), exc
+    while isinstance(current, BaseException) and id(current) not in seen and len(names) < 5:
+        seen.add(id(current))
+        names.append(type(current).__name__)
+        nested = next((arg for arg in current.args if isinstance(arg, BaseException)), None)
+        if nested is None and isinstance(getattr(current, 'reason', None), BaseException):
+            nested = current.reason  # urllib3 MaxRetryError
+        current = nested or current.__cause__ or current.__context__
+    return '<'.join(names)
+
+
 def _billed(usage) -> bool:
     """True when the provider reported a usable actual cost for this request."""
     actual = usage.get('cost')
@@ -183,7 +199,8 @@ def process_batch(client: Enricher, jobs: list[dict], preview: bool = False) -> 
                 status = getattr(exc, 'status_code', None) or getattr(getattr(exc, 'response', None), 'status_code', None)
                 # Do not expose response text, URLs with credentials or raw jobs.
                 error = (('OpenRouter HTTP ' + str(status)) if status else
-                         str(exc)[:1000] if isinstance(exc, EnrichmentError) else type(exc).__name__ + ' during ' + stage)
+                         str(exc)[:1000] if isinstance(exc, EnrichmentError) else
+                         _cause_chain(exc) + ' during ' + stage)
                 attempts = max(job.get('attempts', 0) for job in outstanding) + 1
                 # Correction retries are paid. After the alert threshold, fall
                 # back to the provider backoff so one stubborn cycle cannot

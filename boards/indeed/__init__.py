@@ -75,7 +75,9 @@ class IndeedBoard(JobBoard):
             ) as session:
                 logger.info("[indeed] Opening search page (login check first)")
                 with timing.stage("indeed", "login_check"):
-                    session.fetch(INDEED_SEARCH_URL, wait=5000)
+                    # wait=0: scrapling's wait runs AFTER the login page_action
+                    # has decided; it only added 5s idle per run.
+                    session.fetch(INDEED_SEARCH_URL, wait=0)
 
             if not outcome["ok"]:
                 logger.info("[indeed] Login check failed — skipping scrape.")

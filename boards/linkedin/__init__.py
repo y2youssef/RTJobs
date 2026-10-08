@@ -108,7 +108,9 @@ class LinkedInBoard(JobBoard):
             ) as session:
                 logger.info("[linkedin] Opening login page (redirects to feed if active)")
                 with timing.stage("linkedin", "login_check"):
-                    session.fetch(LINKEDIN_LOGIN_URL, wait=5000)
+                    # wait=0: scrapling's wait runs AFTER page_action, which already
+                    # waits for the feed redirect — it only added 5s idle per run.
+                    session.fetch(LINKEDIN_LOGIN_URL, wait=0)
 
             if not outcome["ok"]:
                 logger.info("[linkedin] Login check failed — skipping scrape.")

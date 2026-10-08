@@ -392,6 +392,65 @@ def verify(directory):
     print("PASS loading-screen diagnosis and degraded run status with partial data preserved")
     verify_browser_recovery()
     verify_linkedin_login()
+    verify_first_page_and_schedule()
+
+
+def verify_first_page_and_schedule():
+    """One search page per run with every new card; overruns chain at once."""
+    import fcntl
+    import main as entry
+    from boards.base import load_board_selectors
+    from boards.indeed.scraper import IndeedJobSpider
+    from boards.linkedin.scraper import LinkedInJobSpider
+    from boards.wuzzuf.scraper import WuzzufJobSpider
+    from config import DB_PATH
+    from scrapling.spiders import Request
+
+    async def collect(generator):
+        return [item async for item in generator]
+
+    # LinkedIn/Wuzzuf: the parsed first page is everything; no next-page request.
+    for spider, url in ((LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1"),
+                         "https://www.linkedin.com/jobs/search/?sortBy=DD"),
+                        (WuzzufJobSpider(load_board_selectors("wuzzuf"), "http://127.0.0.1:1"),
+                         "https://wuzzuf.net/search/jobs?q=&start=0")):
+        spider._page_jobs = [{"external_id": str(i)} for i in range(25)]
+        out = asyncio.run(collect(spider.parse(SimpleNamespace(url=url))))
+        assert out == spider._page_jobs and not any(isinstance(item, Request) for item in out)
+    # Indeed: every new card gets a detail request (the old cap was 10).
+    indeed = IndeedJobSpider(load_board_selectors("indeed"), "http://127.0.0.1:1")
+    indeed._page_jobs = [{"external_id": f"k{i}", "extra": {}} for i in range(14)]
+    out = asyncio.run(collect(indeed.parse(SimpleNamespace(url="https://eg.indeed.com/jobs"))))
+    assert len(out) == 14 and all(isinstance(item, Request) for item in out)
+    assert not any(job["extra"].get("detail_status") for job in indeed._page_jobs)
+
+    # Ticks sit on epoch multiples of the interval.
+    assert not entry._missed_tick(180 * 1000 + 2, 180 * 1000 + 179, minutes=3)
+    assert entry._missed_tick(180 * 1000 + 2, 180 * 1001 + 1, minutes=3)
+
+    def lock_is_free():
+        with open(DB_PATH + ".scraper.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if still held
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(entry, "_install_signal_handlers"))
+        stack.enter_context(patch.object(entry, "_run_boards", return_value=0))
+        chain = stack.enter_context(patch.object(entry, "_start_next_cycle_now", side_effect=lock_is_free))
+        missed = stack.enter_context(patch.object(entry, "_missed_tick", return_value=True))
+        with patch.object(entry.sys, "argv", ["main.py", "--scheduled"]):
+            assert entry.main() == 0 and chain.call_count == 1, "an overrun must chain the next cycle"
+        with patch.object(entry.sys, "argv", ["main.py"]):
+            entry.main()
+        assert chain.call_count == 1, "manual runs never chain"
+        missed.return_value = False
+        with patch.object(entry.sys, "argv", ["main.py", "--scheduled"]):
+            entry.main()
+        assert chain.call_count == 1, "a cycle that ended before the next tick waits for ofelia"
+    with patch.object(entry.os, "execv") as execv, patch.object(entry.logging, "shutdown"), \
+            patch.object(entry.sys, "argv", ["main.py", "--scheduled"]):
+        entry._start_next_cycle_now()
+    assert execv.call_args.args[1][1:] == ["main.py", "--scheduled"]
+    print("PASS first page only (all cards, no Indeed detail cap), overrun chains the next cycle after releasing the lock")
 
 
 def verify_linkedin_login():

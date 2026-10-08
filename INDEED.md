@@ -103,7 +103,7 @@ Fetch only for new keys (dedupe first). Three supported embedded sources:
 
 ## Poll frequency / "never miss" math
 - Miss condition: >15 new jobs posted within one poll interval.
-- Nominal capacity = 15 jobs/interval = 3,600 jobs/day at 6-min polling.
+- Nominal capacity = 15 jobs/interval = 7,200 jobs/day at 3-min polling.
   This assumes every run completes on schedule and all slots are new listings;
   it is not a guarantee of coverage.
 - Caveats: sponsored jobs occupy top-15 slots (smaller capacity); bursts
@@ -121,10 +121,10 @@ link=https://eg.indeed.com/viewjob?jk={key} (canonical — drop the token-laden
 `viewJobLink` query string), extra={location, salary min/max/type, jobTypes,
 snippet, latitude/longitude}, scraped_at. `description_truncated` remains true
 until a full detail description is parsed; `description_source` is either
-`search_snippet` or `detail`. `detail_status` identifies `cap_reached`,
-`unavailable` or `fetch_failed`. Failed detail requests retain the raw search
-card. The ten-detail cap still applies; skipped details are not automatically
-retried on later scrapes because those job keys have already been saved.
+`search_snippet` or `detail`. `detail_status` identifies `unavailable` or
+`fetch_failed`. Failed detail requests retain the raw search card. Every new
+card on the page gets a detail fetch (the former ten-detail cap was removed);
+failed details are not retried later because those job keys are saved.
 
 ## To verify (implementation phase)
 - Offline fixtures in `markup/indeed/`: search page capture + 1 viewjob capture

@@ -20,7 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-GRID_SECONDS = 6 * 60  # ofelia fires "0 */6 * * * *" at second 0 of the grid
+# Catch-up cycles chained right after an overrun start off-grid by design;
+# a real container boot never takes this long.
+CHAINED_AFTER_SECONDS = 60
 
 
 def _pct(values: list[float], pct: float) -> float:
@@ -69,8 +71,9 @@ def end_to_end(conn: sqlite3.Connection, since: str) -> dict[str, list[float]]:
     return groups
 
 
-def scheduler_alignment(conn: sqlite3.Connection, since: str) -> list[float]:
-    """Per-cycle delay between ofelia's 6-minute grid and the cycle start."""
+def scheduler_alignment(conn: sqlite3.Connection, since: str, grid_seconds: int = 180) -> list[float]:
+    """Per-cycle delay between ofelia's grid tick and the cycle start
+    (excluding cycles chained after an overrun)."""
     rows = conn.execute("SELECT started_at FROM scrape_batches WHERE started_at >= ?", (since,)).fetchall()
     gaps = []
     for (started_at,) in rows:
@@ -79,7 +82,9 @@ def scheduler_alignment(conn: sqlite3.Connection, since: str) -> list[float]:
         except ValueError:
             continue
         stamp = moment.replace(tzinfo=timezone.utc).timestamp()  # stored timestamps are UTC
-        gaps.append(stamp - (stamp // GRID_SECONDS) * GRID_SECONDS)
+        gap = stamp - (stamp // grid_seconds) * grid_seconds
+        if gap < CHAINED_AFTER_SECONDS:
+            gaps.append(gap)
     return gaps
 
 
@@ -122,7 +127,7 @@ def main() -> int:
     totals = cycle_totals(conn, since)
     if totals:
         print(f"\n-- full scrape cycle --\nall boards: {_stats(totals)}")
-    gaps = scheduler_alignment(conn, since)
+    gaps = scheduler_alignment(conn, since, config.SCRAPE_INTERVAL_MINUTES * 60)
     if gaps:
         print(f"\n-- scheduler -> cycle start (docker start + xvfb + imports) --\ncontainer_boot: {_stats(gaps)}")
 

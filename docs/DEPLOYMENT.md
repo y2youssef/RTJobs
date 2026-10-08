@@ -142,8 +142,13 @@ full/duplicate notifications, shutdown and rollback without a premature wakeup.
 ## Pending: UTC clock, login safety and cycle limits — not yet deployed
 
 Changes: stored timestamps move to UTC (`core/clock.py`; only `posted_at`
-stays local), LinkedIn rejected-credential lock / late-redirect fix, and
-free hold-back of cycles that can never fit one classifier request.
+stays local), LinkedIn rejected-credential lock / late-redirect fix, free
+hold-back of cycles that can never fit one classifier request, classifier
+`Connection: close` (no stale keep-alive sockets), first search page only on
+every board with a 3-minute ofelia schedule (`SCRAPE_INTERVAL_MINUTES`,
+no-overlap, immediate catch-up cycle after an overrun), and no idle 5s wait
+after the LinkedIn/Indeed login checks. The scraper `command` and ofelia
+labels change, so the containers must be recreated (the commands below do).
 
 The first process on the new image converts existing local timestamps once
 (`PRAGMA user_version` 0 -> 1). An old-image process still running afterwards

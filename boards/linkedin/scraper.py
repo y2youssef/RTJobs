@@ -1,5 +1,9 @@
 """LinkedIn job spider built on scrapling's Spider framework.
 
+ONE search page per run (the newest 25, sortBy=DD), every card on it checked:
+the schedule runs often enough that anything on page 2 is already minutes old,
+and no "stop at the first known card" rule can skip promoted/reposted cards.
+
 Structure verified against the scrapling docs (spiders/sessions.html and
 fetching/stealthy.html): configure_sessions + manager.add, requests routed
 with sid="stealth", and per-request page_action callbacks.
@@ -30,8 +34,6 @@ from core.log import configure_spider_logging
 
 logger = logging.getLogger(__name__)
 
-_MAX_START = 100
-_PAGE_SIZE = 25
 _DETAIL_TIMEOUT = 8_000
 
 _TIME_DELTAS = {
@@ -145,7 +147,6 @@ class LinkedInJobSpider(Spider):
         self.seen_ids: set[str] = set()  # IDs discovered during this run only
 
         self._page_jobs: list[dict] = []
-        self._repeat_found: bool = False
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -201,7 +202,6 @@ class LinkedInJobSpider(Spider):
                 initial_html = ""
             detail = "LinkedIn search requires sign-in/checkpoint handling or returned an access/rate-limit error. "
             self.health.check("search_structure", False, detail + self.diagnostics.summary(), initial_html)
-            self._repeat_found = True
             return False
         for attempt in range(LINKEDIN_SEARCH_RECOVERY_ATTEMPTS + 1):
             deadline = time.monotonic() + (LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS if attempt else 30)
@@ -252,7 +252,6 @@ class LinkedInJobSpider(Spider):
         detail = _search_failure_detail(html, self.sel["search"], stage, last_error)
         detail += " Evidence: " + self.diagnostics.summary()
         self.health.check("search_structure", False, detail, html)
-        self._repeat_found = True
         return False
 
     async def start_requests(self):
@@ -269,7 +268,6 @@ class LinkedInJobSpider(Spider):
         self._page_jobs = []
         self._detail_failures = {}
         self.health.check("search_fetch", True)
-        found_at_least_one_duplicate = False
         # Whole search page: hydration wait, scroll, card clicks, detail panels.
         with timing.stage("linkedin", "search_page", lambda: {"new_jobs": len(self._page_jobs)}):
             if not await self._wait_for_search(page):
@@ -281,20 +279,14 @@ class LinkedInJobSpider(Spider):
             usable = sum(bool(key) for _, key in card_ids)
             if not usable:
                 await self.health.page_failure("search_structure", f"Found {len(cards)} cards but no usable job IDs.", page)
-                self._repeat_found = True
                 return
             self.health.check("search_structure", True)
             known_ids = self.seen_ids | db.seen_ids_for("linkedin", (key for _, key in card_ids))
 
-            jobs_to_scrape_now = []
-            for card, job_id in card_ids:
-                if not job_id:
-                    continue
-
-                if str(job_id) in known_ids:
-                    found_at_least_one_duplicate = True
-                else:
-                    jobs_to_scrape_now.append((card, job_id))
+            # Every unknown card on the page, wherever it sits: promoted or
+            # reposted old cards never hide newer ones (no pagination).
+            jobs_to_scrape_now = [(card, job_id) for card, job_id in card_ids
+                                  if job_id and str(job_id) not in known_ids]
 
             logger.info(
                 f"[info] Found {len(jobs_to_scrape_now)} new jobs and"
@@ -302,6 +294,8 @@ class LinkedInJobSpider(Spider):
             )
 
             for card, job_id in jobs_to_scrape_now:
+                if self._login_redirect:
+                    break  # session gone: every further card would wait out its timeouts
                 pause = random.uniform(2.0, 4.0)  # human-like pause
                 timing.record("linkedin", "human_delay", pause, {"card": str(job_id)})
                 await asyncio.sleep(pause)
@@ -321,13 +315,6 @@ class LinkedInJobSpider(Spider):
             else:
                 self.health.check("detail_fetch", True)
             self.health.job_fields(self._page_jobs)
-
-        if found_at_least_one_duplicate:
-            logger.info("[stop] Duplicate detected on this page — no next page.")
-            self._repeat_found = True
-
-        if not jobs_to_scrape_now and len(cards) > 0:
-            self._repeat_found = True
 
         # Suspicious empty page or login redirect -> keep markup for debugging
         if (not jobs_to_scrape_now and len(cards) == 0) or self._login_redirect:
@@ -512,31 +499,9 @@ class LinkedInJobSpider(Spider):
         return False
 
     async def parse(self, response: Response):
+        # First page only: no follow-up page requests.
         for job in self._page_jobs:
             yield job
-
-        if self._repeat_found or self._login_redirect:
-            return
-
-        match = re.search(r"start=(\d+)", response.url)
-        start_val = int(match.group(1)) if match else 0
-        next_start = start_val + _PAGE_SIZE
-
-        if next_start >= _MAX_START:
-            return
-
-        next_url = (
-            re.sub(r"start=\d+", f"start={next_start}", response.url)
-            if "start=" in response.url
-            else response.url + f"&start={next_start}"
-        )
-        logger.info(f"[page] → page {next_start // _PAGE_SIZE + 1}")
-        yield Request(
-            next_url,
-            callback=self.parse,
-            sid="stealth",
-            page_action=self.deep_scan_page,
-        )
 
 
 def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:

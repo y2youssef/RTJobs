@@ -1,8 +1,9 @@
 """Wuzzuf job spider.
 
 Wuzzuf is Cloudflare-protected (cf_clearance challenge) and server-side
-rendered. We fetch the SSR search pages through a stealth browser session
-with solve_cloudflare=True.
+rendered. We fetch the FIRST SSR search page (newest 15) through a stealth
+browser session with solve_cloudflare=True; every card on it is checked. The
+schedule runs often enough that later pages only hold minutes-old jobs.
 
 Two data sources per page, combined:
 1. The rendered DOM (job card order, job ids from the slug links).
@@ -30,8 +31,6 @@ from core.browser import patch_no_load_wait
 from core.scrape_health import ScrapeHealth
 
 logger = logging.getLogger(__name__)
-
-_MAX_PAGES = 20
 
 _TIME_DELTAS = {
     "minute": timedelta(minutes=1),
@@ -262,7 +261,6 @@ class WuzzufJobSpider(Spider):
         self.cdp_url = cdp_url
         self.seen_ids: set[str] = set()  # IDs discovered during this run only
         self._page_jobs: list[dict] = []
-        self._repeat_found: bool = False
         self.health = ScrapeHealth("wuzzuf")
         super().__init__(*args, **kwargs)
         from core.log import configure_spider_logging
@@ -299,7 +297,6 @@ class WuzzufJobSpider(Spider):
         except Exception as e:
             logger.warning(f"[wuzzuf] Job list never appeared: {e}")
             await self.health.page_failure("search_structure", "Job links did not appear before the timeout.", page)
-            self._repeat_found = True
             return
 
         html = await page.content()
@@ -329,41 +326,16 @@ class WuzzufJobSpider(Spider):
             self.seen_ids.add(job["external_id"])
 
         logger.info(
-            f"[wuzzuf] {len(jobs)} new + {found_duplicate and 'duplicate(s)' or 'no duplicates'}"
+            f"[wuzzuf] {len(jobs)} new + {found_duplicate and 'known job(s)' or 'no known jobs'} on the first page"
         )
-        if found_duplicate:
-            logger.info("[wuzzuf] Duplicate found — stopping pagination.")
-            self._repeat_found = True
 
         if not jobs and not found_duplicate:
             markup.save_snapshot("wuzzuf", "search_empty", html)
 
     async def parse(self, response: Response):
+        # First page only: no follow-up page requests.
         for job in self._page_jobs:
             yield job
-
-        if self._repeat_found:
-            return
-
-        match = re.search(r"start=(\d+)", response.url)
-        start = int(match.group(1)) if match else 0
-        next_start = start + 1
-
-        if next_start >= _MAX_PAGES:
-            return
-
-        next_url = (
-            re.sub(r"start=\d+", f"start={next_start}", response.url)
-            if "start=" in response.url
-            else response.url + f"&start={next_start}"
-        )
-        logger.info(f"[wuzzuf] → page start={next_start}")
-        yield Request(
-            next_url,
-            callback=self.parse,
-            sid="stealth",
-            page_action=self.scan_page,
-        )
 
 
 def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> list[dict]:
