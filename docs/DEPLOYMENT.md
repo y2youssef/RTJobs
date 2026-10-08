@@ -151,6 +151,10 @@ after the LinkedIn/Indeed login checks. The scraper `command` and ofelia
 labels change, so the containers must be recreated (the commands below do).
 `jobs.scraped_at` changes shape from `HH:MM` local to `HH:MM:SS` UTC; anything
 reading the DB directly should parse it with `datetime.fromisoformat`.
+The scraper now starts through `docker/entrypoint.sh` (Xvfb + exec, so
+`docker stop` reaches Python), which only exists in a rebuilt image: always
+deploy with `--build`. Manual CDP attach is unchanged (chrome://inspect or
+`scripts/inspect_chrome.py`); other web origins are now refused.
 To change the cadence later, set `SCRAPE_INTERVAL_MINUTES` in `.env` and run
 `docker compose up -d` (it recreates both the scraper and the scheduler).
 
