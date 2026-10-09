@@ -461,8 +461,7 @@ class IndeedJobSpider(Spider):
             return
 
         try:
-            await page.wait_for_timeout(2500)  # let the SSR blobs land
-            html = await page.content()
+            html = await self._search_html(page)
         except Exception as e:
             logger.info(f"[indeed] Could not read search page: {e}")
             await self.health.page_failure("search_structure", "Could not read search-page HTML.", page)
@@ -506,6 +505,21 @@ class IndeedJobSpider(Spider):
         )
         if blob_missing and not jobs:
             markup.save_snapshot("indeed", "search_empty", html)
+
+    async def _search_html(self, page, timeout_ms: int = 2500, step_ms: int = 250) -> str:
+        """Search-page HTML once the job-cards blob parses completely.
+
+        Replaces a fixed 2.5s wait on every run: the blob is server-rendered
+        and usually complete at once. A page without it is returned after
+        the old 2.5s, and the normal checks judge it (block page, missing blob).
+        """
+        waited = 0
+        while True:
+            html = await page.content()
+            if _extract_balanced_json(html, _CARDS_MARKER) or waited >= timeout_ms:
+                return html
+            await page.wait_for_timeout(step_ms)
+            waited += step_ms
 
     @timing.timed("indeed", "detail_page", lambda spider, page, key="": {"jobkey": (key or "")[:16]})
     async def scan_detail_page(self, page, key: str = ""):

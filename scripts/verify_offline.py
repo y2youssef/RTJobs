@@ -369,6 +369,17 @@ def verify(directory):
         with patch.object(db, "seen_ids_for", return_value={j["external_id"] for j in cards}):
             await good.scan_search_page(FixturePage(search))
         assert not good._page_jobs and all(c["good"] for c in good.health.checks.values())
+        # The search scan reads the page as soon as the job-cards blob parses
+        # (it used to wait a fixed 2.5s); without the blob it waits the old 2.5s.
+        class CountingPage(FixturePage):
+            def __init__(self, html): super().__init__(html); self.waited = 0
+            async def wait_for_timeout(self, ms): self.waited += ms
+        quick = CountingPage(search)
+        await indeed.IndeedJobSpider({}, "http://127.0.0.1:1")._search_html(quick)
+        assert quick.waited == 0
+        empty = CountingPage("<html><body>still loading</body></html>")
+        await indeed.IndeedJobSpider({}, "http://127.0.0.1:1")._search_html(empty)
+        assert empty.waited == 2500
         # Indeed's ;jsessionid auth bounce (HTTP 400 on a valid session) is
         # undone with Back, never treated as a logout (user finding, Oct 2026).
         bounce = ("https://secure.indeed.com/auth;jsessionid=node01abc.node0?hl=en_US&service=my&co=US"
