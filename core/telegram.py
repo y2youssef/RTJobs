@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 _API = f"{TELEGRAM_API_BASE_URL}/bot{TELEGRAM_TOKEN}"
 _SESSION = requests.Session()
+# Telegram drops idle keep-alive sockets; reusing one failed the first send
+# after every quiet spell (71 delivery + 11 monitor ConnectionErrors on
+# Oct 8-9, each costing the 2s retry). Bursts keep their pooled connection.
+_IDLE_RESET_SECONDS = 60
+_last_request = 0.0
+
+
+def _session() -> requests.Session:
+    """The shared session, emptied of pooled sockets after an idle gap."""
+    global _last_request
+    now = time.monotonic()
+    if now - _last_request > _IDLE_RESET_SECONDS:
+        _SESSION.close()  # adapters reconnect lazily on the next request
+    _last_request = now
+    return _SESSION
 _LAST_SEND: dict[str, float] = {}
 _RETRY_AFTER: dict[str, float] = {}
 
@@ -57,13 +72,14 @@ def _send(
             }
             if parse_mode:
                 payload["parse_mode"] = parse_mode
-            resp = _SESSION.post(
+            resp = _session().post(
                 f"{_API}/sendMessage",
                 json=payload,
                 timeout=10,
             )
         except requests.RequestException as e:
             logger.warning("[telegram] Request error (attempt %s): %s", attempt + 1, type(e).__name__)
+            _SESSION.close()  # never retry on a possibly dead pooled socket
             time.sleep(2)
             continue
 
@@ -227,7 +243,7 @@ _UPDATE_OFFSET_KEY = "telegram_update_offset"
 def _api(method: str, payload: dict, timeout: int = 15) -> dict | None:
     """POST to the Bot API; return the decoded JSON envelope or None."""
     try:
-        resp = _SESSION.post(f"{_API}/{method}", json=payload, timeout=timeout)
+        resp = _session().post(f"{_API}/{method}", json=payload, timeout=timeout)
     except requests.RequestException as e:
         logger.warning("[telegram] API error (%s): %s", method, type(e).__name__)
         return None
