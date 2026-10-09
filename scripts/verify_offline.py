@@ -1357,6 +1357,83 @@ def verify_browser_recovery():
                 patch.object(db, "seen_ids_for", return_value=set(ids[1:])):
             await api.deep_scan_page(ListPage(GrowingList([25], ids)))
         assert api_saved[0]["posted_at"] == "2026-10-09 17:05" and api_saved[0]["extra"]["linkedin_reposted"] is True
+        # Clicked job: its API records (JobPosting + TOP_CARD) give the core
+        # fields keyed by ID; the panel DOM only adds "About the company".
+        listed = int(datetime(2026, 10, 9, 17, 5).timestamp() * 1000)
+        posting = {"included": [
+            {"entityUrn": "urn:li:fsd_jobPosting:4477000001", "title": "Data Developer",
+             "description": {"text": "Build data pipelines.\nSQL and Python."},
+             "companyDetails": {"name": "Talent Mastery"}, "listedAt": listed, "originalListedAt": listed,
+             "repostedJob": False, "*employmentStatus": "urn:li:fsd_employmentStatus:FULL_TIME",
+             "*location": "urn:li:fsd_geo:1", "*industryV2Taxonomy": ["urn:li:fsd_industryV2:96"]},
+            {"entityUrn": "urn:li:fsd_geo:1", "defaultLocalizedName": "Cairo, Egypt"},
+            {"entityUrn": "urn:li:fsd_employmentStatus:FULL_TIME", "localizedName": "Full-time"},
+            {"entityUrn": "urn:li:fsd_industryV2:96", "name": "IT Services and IT Consulting"}, "junk"]}
+        top_card = {"included": [
+            {"entityUrn": "urn:li:fsd_jobPosting:4477000001", "title": "Data Developer",
+             "*jobWorkplaceTypes": ["urn:li:fsd_workplaceType:1"]},
+            {"entityUrn": "urn:li:fsd_workplaceType:1", "localizedName": "On-site", "workplaceTypeEnum": "ON_SITE"}]}
+        store = {"jobs": {}, "names": {}}
+        li._merge_job_entities(store, posting)
+        assert li._api_detail(store, "4477000001")["workplace"] is None
+        li._merge_job_entities(store, top_card)
+        detail = li._api_detail(store, "4477000001")
+        assert detail == {"title": "Data Developer", "company": "Talent Mastery",
+                          "description": "Build data pipelines.\nSQL and Python.", "detail_location": "Cairo, Egypt",
+                          "job_type": "Full-time", "workplace": "On-site", "industry": "IT Services and IT Consulting",
+                          "listed_at": "2026-10-09 17:05", "original_listed_at": "2026-10-09 17:05", "reposted": False}, detail
+        assert li._api_detail(store, "999") is None and li._api_detail({"jobs": {}, "names": {}}, "1") is None
+        class PanelLocator:
+            def __init__(self, html, n): self.html, self.n, self.first = html, n, self
+            async def inner_html(self): return self.html
+            async def count(self): return self.n
+            async def text_content(self): return ""
+        class PanelPage:
+            url = "https://www.linkedin.com/jobs/search/"
+            def __init__(self, html): self.html = html
+            def locator(self, css): return PanelLocator(self.html, 0 if css == sel["search"]["login_redirect"] else 1)
+            async def content(self): return self.html
+        stale_panel = '<div class="job-view-layout"><h1 class="t-24 t-bold">Previous job</h1><div id="job-details">old text</div></div>'
+        fast = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        fast._job_api = store
+        settles = []
+        async def record_sleep(seconds): settles.append(seconds)
+        with patch.object(fast, "_open_card", AsyncMock(return_value=True)), \
+                patch.object(li.asyncio, "sleep", side_effect=record_sleep):
+            job = await fast._scrape_card(PanelPage(stale_panel), None, "4477000001")
+        assert job["title"] == "Data Developer" and job["description"].startswith("Build data pipelines")
+        assert job["company"] == "Talent Mastery" and job["posted_at"] == "2026-10-09 17:05"
+        assert {k: job["extra"][k] for k in ("workplace", "job_type", "detail_location", "company_industry", "detail_source")} == {
+            "workplace": "On-site", "job_type": "Full-time", "detail_location": "Cairo, Egypt",
+            "company_industry": "IT Services and IT Consulting", "detail_source": "jobs_api"}, job["extra"]
+        assert not any(s >= 0.5 for s in settles), f"no fixed hydration settles on the API path: {settles}"
+        # No API record: the panel DOM path with its hydration waits (real,
+        # shortened timers); after two misses without a hit the run stops
+        # waiting for the API; a record landing mid-wait is used at once.
+        real_sleep = asyncio.tasks.sleep  # scenarios() mocks asyncio.sleep
+        slow = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        panel = '<div class="job-view-layout"><h1 class="t-24 t-bold">Panel title</h1><div id="job-details">Panel text</div></div>'
+        with patch.object(slow, "_open_card", AsyncMock(return_value=True)), \
+                patch.object(li.asyncio, "sleep", new=real_sleep), patch.object(li.random, "uniform", return_value=0.05), \
+                patch.object(li, "_API_DETAIL_WAIT", 0.05):
+            job = await slow._scrape_card(PanelPage(panel), None, "4477000002")
+            assert job["title"] == "Panel title" and job["extra"]["detail_source"] == "panel"
+            await slow._scrape_card(PanelPage(panel), None, "4477000003")
+            started = time.monotonic()
+            assert await slow._await_api_detail("4477000004", 5) is None and time.monotonic() - started < 0.1
+            late = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+            async def lands():
+                await real_sleep(0.15)
+                li._merge_job_entities(late._job_api, posting)
+                li._merge_job_entities(late._job_api, top_card)
+            with patch.object(late, "_open_card", AsyncMock(return_value=True)), \
+                    patch.object(li.random, "uniform", return_value=0.5):
+                landing = asyncio.ensure_future(lands())
+                started = time.monotonic()
+                job = await late._scrape_card(PanelPage(panel), None, "4477000001")
+                await landing
+            assert job["extra"]["detail_source"] == "jobs_api" and job["title"] == "Data Developer"
+            assert time.monotonic() - started < 0.5, "stops waiting as soon as the record lands"
         known = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
         known._api_cards = {key: {"listed_at": "2026-10-09 16:00"} for key in ids}
         with patch.object(known, "_wait_for_search", AsyncMock(return_value=True)), \

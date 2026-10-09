@@ -35,6 +35,11 @@ from core.log import configure_spider_logging
 logger = logging.getLogger(__name__)
 
 _DETAIL_TIMEOUT = 8_000
+# A clicked job's API record normally lands ~0.5s after the click and the
+# workplace type ~0.9s. Past the first wait the panel DOM path runs its own
+# hydration waits and still switches to the record if it lands meanwhile.
+_API_DETAIL_WAIT = 0.6
+_API_EXTRAS_WAIT = 0.6
 # LinkedIn renders 25 cards per search page. The list loads top-first and
 # appends the rest while scrolled: snapshots caught 7 of 25 (positions 0-6).
 _FULL_PAGE = 25
@@ -111,6 +116,73 @@ def _cards_from_api(body: dict) -> dict[str, dict]:
         if urn.startswith("urn:li:fsd_jobPosting:") and "repostedJob" in entity:
             cards.setdefault(urn.rsplit(":", 1)[1], {})["reposted"] = bool(entity["repostedJob"])
     return cards
+
+
+# Prefixes of the voyager entities a clicked job's responses carry.
+_NAMED_ENTITIES = ("urn:li:fsd_geo:", "urn:li:fsd_employmentStatus:", "urn:li:fsd_workplaceType:",
+                   "urn:li:fsd_industryV2:")
+
+
+def _merge_job_entities(store: dict, body: dict) -> None:
+    """Fold a clicked job's voyager responses into store {"jobs", "names"}.
+
+    Clicking a card makes LinkedIn fetch the job by ID: the JobPosting record
+    (voyagerJobsDashJobPostings, ~0.45s) has title, full description.text,
+    company name, listedAt/originalListedAt, repostedJob and references to
+    its location, employment status and industries; the TOP_CARD section
+    (~0.9s) adds the workplace type. Referenced entities (geo, employment
+    status, workplace type, industry) arrive in the same `included` lists
+    and are kept by URN. Unknown shapes are skipped, never raised.
+    """
+    for entity in (body or {}).get("included") or []:
+        if not isinstance(entity, dict):
+            continue
+        urn = str(entity.get("entityUrn") or "")
+        if urn.startswith("urn:li:fsd_jobPosting:"):
+            job = store["jobs"].setdefault(urn.rsplit(":", 1)[1], {})
+            description = entity.get("description")
+            if isinstance(description, dict) and description.get("text"):
+                job["description"] = description["text"]
+            company = entity.get("companyDetails")
+            if isinstance(company, dict) and company.get("name"):
+                job["company"] = company["name"]
+            for key in ("title", "listedAt", "originalListedAt", "repostedJob", "*employmentStatus", "*location"):
+                if entity.get(key) not in (None, ""):
+                    job[key] = entity[key]
+            for key in ("*industryV2Taxonomy", "*jobWorkplaceTypes", "*workplaceTypesResolutionResults"):
+                if isinstance(entity.get(key), list) and entity[key]:
+                    job[key] = list(entity[key])
+        elif urn.startswith(_NAMED_ENTITIES):
+            name = entity.get("defaultLocalizedName") or entity.get("localizedName") or entity.get("name")
+            if name:
+                store["names"][urn] = name
+
+
+def _api_detail(store: dict, job_id: str) -> dict | None:
+    """The clicked job's fields from its API records, or None without a description."""
+    job = store["jobs"].get(str(job_id)) or {}
+    if not job.get("description"):
+        return None
+    names = store["names"]
+    def resolve(refs):
+        return ", ".join(dict.fromkeys(names[ref] for ref in refs or [] if ref in names)) or None
+    def wall(ms):
+        try:
+            return datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+    return {
+        "title": job.get("title") or "",
+        "company": job.get("company") or "",
+        "description": job["description"].strip(),
+        "detail_location": names.get(job.get("*location")),
+        "job_type": names.get(job.get("*employmentStatus")),
+        "workplace": resolve(job.get("*jobWorkplaceTypes") or job.get("*workplaceTypesResolutionResults")),
+        "industry": resolve(job.get("*industryV2Taxonomy")),
+        "listed_at": wall(job.get("listedAt")),
+        "original_listed_at": wall(job.get("originalListedAt")),
+        "reposted": job.get("repostedJob"),
+    }
 
 
 def _parse_linkedin_time(time_str: str) -> str:
@@ -224,6 +296,10 @@ class LinkedInJobSpider(Spider):
         # Job id -> {"listed_at", "reposted"} from the job-cards API response.
         self._api_cards: dict[str, dict] = {}
         self._api_reads: list = []
+        # Clicked jobs' API records (see _merge_job_entities).
+        self._job_api: dict = {"jobs": {}, "names": {}}
+        self._api_details = 0
+        self._api_misses = 0
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -260,8 +336,43 @@ class LinkedInJobSpider(Spider):
             page.on("response", self._on_response)
 
     def _on_response(self, response):
-        if self.sel["search"].get("cards_api", "voyagerJobsDashJobCards") in (response.url or ""):
+        url = response.url or ""
+        if self.sel["search"].get("cards_api", "voyagerJobsDashJobCards") in url:
             self._api_reads.append(asyncio.ensure_future(self._read_cards(response)))
+        elif "/voyager/api/" in url:
+            # Every voyager response, not only ones naming the job: LinkedIn
+            # prefetches details of nearby cards and then skips the request on
+            # the click (staging Oct 9: 2 of 6 clicks had no own request).
+            self._api_reads.append(asyncio.ensure_future(self._read_job_api(response)))
+
+    async def _read_job_api(self, response):
+        try:
+            if "json" not in (response.headers.get("content-type") or ""):
+                return
+            _merge_job_entities(self._job_api, await response.json())
+        except Exception as exc:  # never fails the scan; the panel DOM still works
+            logger.debug("[linkedin] Job API response unreadable: %s", type(exc).__name__)
+
+    async def _await_api_detail(self, job_id: str, wait: float = 0.0) -> dict | None:
+        """The clicked job's API data: the record with its description (up to
+        `wait` seconds), then a short wait for the workplace type, which comes
+        with the top card a moment later. None = not (yet) available."""
+        # Two misses and no hit this run: the API changed or is not used;
+        # stop paying the wait on every remaining card.
+        if self._api_misses >= 2 and not self._api_details:
+            wait = 0
+        deadline = time.monotonic() + wait
+        detail = _api_detail(self._job_api, job_id)
+        while detail is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            detail = _api_detail(self._job_api, job_id)
+        if detail is None:
+            return None
+        deadline = time.monotonic() + _API_EXTRAS_WAIT
+        while not detail["workplace"] and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            detail = _api_detail(self._job_api, job_id)
+        return detail
 
     async def _read_cards(self, response):
         try:
@@ -485,6 +596,8 @@ class LinkedInJobSpider(Spider):
                         self.on_job(job)
 
         if jobs_to_scrape_now:
+            logger.info("[linkedin] Detail data from the job API for %s of %s new jobs (rest: panel DOM).",
+                        self._api_details, len(jobs_to_scrape_now))
             failures = len(jobs_to_scrape_now) - len(self._page_jobs)
             if failures:
                 reasons = "; ".join(f"{key}: {value}" for key, value in list(self._detail_failures.items())[:3])
@@ -567,21 +680,48 @@ class LinkedInJobSpider(Spider):
                 return None
 
             d = self.sel["job_detail"]
-            # Detail panel HTML exists instantly (skeleton) — poll for
-            # company hydration instead of a fixed sleep. Detail company
-            # often takes 1-3s after click to populate.
             detail_company_loc = page.locator(d["company"]).first
-            # Short initial settle then poll for non-empty company.
-            await asyncio.sleep(random.uniform(0.8, 1.5))
-            for _ in range(12):  # up to ~6s
-                try:
-                    if ((await detail_company_loc.text_content()) or "").strip():
+            # The click fetched this job by ID; its API record carries the
+            # core fields (keyed by ID, so never the previous card's) and
+            # makes the hydration waits below unnecessary.
+            api = await self._await_api_detail(str(job_id), _API_DETAIL_WAIT)
+            if api is None:
+                # Detail panel HTML exists instantly (skeleton) — poll for
+                # company hydration instead of a fixed sleep. Detail company
+                # often takes 1-3s after click to populate. The API record can
+                # still land meanwhile (slow link): then stop waiting at once.
+                async def settle(seconds):
+                    deadline = time.monotonic() + seconds
+                    while time.monotonic() < deadline:
+                        if _api_detail(self._job_api, str(job_id)):
+                            return True
+                        await asyncio.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+                    return False
+                # Short initial settle then poll for non-empty company.
+                landed = await settle(random.uniform(0.8, 1.5))
+                for _ in range(0 if landed else 12):  # up to ~6s
+                    try:
+                        if ((await detail_company_loc.text_content()) or "").strip():
+                            break
+                    except Exception:
+                        pass
+                    if await settle(0.5):
+                        landed = True
                         break
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5)
-            # Small extra settle for title/description to finish hydrating.
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+                # Small extra settle for title/description to finish hydrating.
+                if not landed:
+                    landed = await settle(random.uniform(0.5, 1.0))
+                api = await self._await_api_detail(str(job_id)) if landed else None
+                if api is None:
+                    self._api_misses += 1
+            if api is not None:
+                self._api_details += 1
+                # "About the company" (industry, description) only exists in
+                # the panel; it renders with its own request, ~0.7s after the click.
+                for _ in range(5):
+                    if await page.locator(d["company_industry"]).count():
+                        break
+                    await asyncio.sleep(0.1)
 
             # Serialize ONLY the detail panel container instead of the whole
             # page (~15 KB vs ~550 KB per card) — the old full-page
@@ -621,6 +761,12 @@ class LinkedInJobSpider(Spider):
                 except Exception:
                     pass
             header = _parse_detail_header(header_text, pill_texts)
+            if api:
+                title = api["title"] or title
+                company = api["company"] or company
+                desc = api["description"] or desc
+                for field in ("detail_location", "workplace", "job_type"):
+                    header[field] = api[field] or header[field]
 
             # Fallback chain: Selector(html) can be stale vs live DOM,
             # and detail hydration can still lag. Card subtitle is always
@@ -670,16 +816,22 @@ class LinkedInJobSpider(Spider):
                               f"Job {job_id}: title present={bool(title)}, description present={bool(desc)}.", html)
 
             logger.info(f"  [ok] {title[:45]}")
+            company_extra = _company_metadata(sel, d)
+            if api and api["industry"] and not company_extra.get("company_industry"):
+                company_extra["company_industry"] = api["industry"]
+            api_extra = {"detail_source": "jobs_api", "original_listed_at": api["original_listed_at"],
+                         "linkedin_reposted": api["reposted"]} if api else {"detail_source": "panel"}
             return {
                 "source": "linkedin",
                 "external_id": str(job_id),
                 "title": title,
                 "company": company,
-                "posted_at": _parse_linkedin_time(rel_time),
+                "posted_at": (api and api["listed_at"]) or _parse_linkedin_time(rel_time),
                 "description": desc,
                 "link": f"https://www.linkedin.com/jobs/view/{job_id}/",
                 "extra": {
-                    **_company_metadata(sel, d),
+                    **company_extra,
+                    **{key: value for key, value in api_extra.items() if value is not None},
                     "hiring_manager_name": mgr_name,
                     "hiring_manager_role": mgr_role,
                     "detail_location": header["detail_location"],
