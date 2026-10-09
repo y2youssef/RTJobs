@@ -406,6 +406,7 @@ class IndeedJobSpider(Spider):
         self._queued: set[str] = set()
         self._detail_snapshots = 0
         self.listings: dict[str, str] = {}  # known jobkey -> current createDate
+        self.on_job = None  # board.save_now: persist each job once its detail page is read
         # Safety-net flags for the board: logged-out mid-scrape (auth
         # redirect) or a CF/WAF block page instead of the search page.
         self._logged_out = False
@@ -552,6 +553,8 @@ class IndeedJobSpider(Spider):
                 job["extra"][field] = value
 
         self._detail_jobs[key] = job
+        if self.on_job:
+            self.on_job(job)
 
     async def parse(self, response: Response):
         if self._logged_out or self._blocked:
@@ -581,10 +584,14 @@ class IndeedJobSpider(Spider):
             yield job
 
 
-def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None, on_job=None) -> dict:
     """Run the spider. Returns {'items': [...], 'logged_out': bool,
-    'blocked': bool} (mirrors the LinkedIn scrape contract)."""
+    'blocked': bool} (mirrors the LinkedIn scrape contract).
+
+    `on_job(job)` is called for each job as soon as its detail page is read.
+    """
     spider = IndeedJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider.on_job = on_job
     if health is not None:
         spider.health = health
     result = spider.start()

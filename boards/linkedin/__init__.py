@@ -88,7 +88,7 @@ class LinkedInBoard(JobBoard):
         health = ScrapeHealth(self.name)
         with timing.stage("linkedin", "scrape_spider",
                           lambda: {"items": len(result["items"]), "status": health.status}):
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
 
         if result["login_redirect"]:
             logger.info("[linkedin] Session died mid-scrape — aborting.")

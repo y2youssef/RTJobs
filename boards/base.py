@@ -13,7 +13,8 @@ from core.browser import chrome_session, install_cdp_default_context_patch
 logger = logging.getLogger(__name__)
 
 
-def persist_jobs(source: str, items: list[dict], listings: dict[str, str] | None = None) -> int:
+def persist_jobs(source: str, items: list[dict], listings: dict[str, str] | None = None,
+                 quiet: bool = False) -> int:
     """Save jobs with blocklist filtering and optional enrichment queuing.
 
     Returns new_count. Blocked jobs are marked seen so they
@@ -39,7 +40,8 @@ def persist_jobs(source: str, items: list[dict], listings: dict[str, str] | None
             f"[{source}] Filtered out {len(blocked_names)} blocked-company"
             f" job(s): {', '.join(sorted(set(blocked_names)))}"
         )
-    logger.info(f"[{source}] Saved {new_count} new job(s)")
+    if not quiet:
+        logger.info(f"[{source}] Saved {new_count} new job(s)")
     if listings:
         reposts = db.record_listings(source, listings)
         if reposts["reposts"]:
@@ -104,9 +106,31 @@ class JobBoard(ABC):
     profile_dir: str = ""
     # CDP port = CHROME_DEBUG_PORT + offset, so boards can run in parallel.
     port_offset: int = 0
+    # Jobs persisted by save_now() during this run (defaults for subclasses
+    # that do not call JobBoard.__init__).
+    _saved: int = 0
+    _saved_ids: frozenset = frozenset()
 
     def __init__(self):
         self.selectors = load_board_selectors(self.name)
+        self._saved = 0
+        self._saved_ids = frozenset()
+
+    def save_now(self, job: dict):
+        """Persist one finished job immediately (spiders call this per job).
+
+        Jobs used to be saved only after the whole spider finished, so a run
+        stopped by its time budget, a signal or a crash lost every job it had
+        already scraped (recovered only if still on page 1 next run). Saving
+        mid-cycle is safe for whole-cycle classification: enrichment only takes
+        jobs whose scrape batch is no longer running. A failed save is retried
+        by finish_scrape() with the rest of the items.
+        """
+        try:
+            self._saved += persist_jobs(self.name, [job], quiet=True)
+            self._saved_ids = self._saved_ids | {str(job["external_id"])}
+        except Exception as exc:
+            logger.warning(f"[{self.name}] Immediate save failed ({exc}); retrying at the end of the run.")
 
     def run(self) -> int:
         """Scrape the board and persist jobs; delivery runs after Chrome closes.
@@ -129,17 +153,17 @@ class JobBoard(ABC):
                     return new_count
                 except BoardTimeout:
                     detail = (f"{self.title} exceeded its {BOARD_TIME_BUDGET_SECONDS}s time budget and was "
-                              "stopped so the other boards' jobs are not held back; jobs from this run "
-                              "were not saved and the next run retries.")
-                    record.finish("timeout", error=detail)
+                              "stopped so the other boards' jobs are not held back; jobs finished before "
+                              "the stop were saved and the next run retries the rest.")
+                    record.finish("timeout", jobs_found=self._saved, error=detail)
                     logger.error(f"[{self.name}] {detail}")
                     report_run_checks(self.name, {"time_budget": (False, detail)})
                     return 0
                 except SystemExit:
-                    record.finish("interrupted", error="terminated by signal")
+                    record.finish("interrupted", jobs_found=self._saved, error="terminated by signal")
                     raise
                 except Exception as exc:
-                    record.finish("error", error=str(exc))
+                    record.finish("error", jobs_found=self._saved, error=str(exc))
                     logger.error(f"[{self.name}] Run failed: {exc}")
                     report_run_checks(self.name, {"board_run": (False, f"{self.title} board failed: {exc}"[:600])})
                     return 0
@@ -164,7 +188,11 @@ class JobBoard(ABC):
 
     def finish_scrape(self, record: RunRecord, health, items: list[dict],
                       listings: dict[str, str] | None = None) -> int:
-        """Persist the scraped jobs and close the run with the health status."""
-        new_count = persist_jobs(self.name, items, listings)
+        """Persist the scraped jobs and close the run with the health status.
+
+        Jobs already saved by save_now() are skipped and counted once.
+        """
+        remaining = [job for job in items or [] if str(job["external_id"]) not in self._saved_ids]
+        new_count = self._saved + persist_jobs(self.name, remaining, listings)
         record.finish(health.status, jobs_found=new_count, error=health.error)
         return new_count

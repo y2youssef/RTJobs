@@ -53,7 +53,7 @@ class IndeedBoard(JobBoard):
         health = ScrapeHealth(self.name)
         with timing.stage(self.name, "scrape_spider",
                           lambda: {"items": len(result["items"]), "status": health.status}):
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health)
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
 
         if result["logged_out"]:
             logger.info("[indeed] Session died mid-scrape — aborting.")

@@ -682,9 +682,15 @@ def start_run(source: str) -> int:
 
 
 def finish_stuck_runs(batch_id: int | None, source: str, status: str, error: str) -> int:
-    """Close a board's runs in this batch that its killed process left open."""
+    """Close a board's runs in this batch that its killed process left open.
+
+    jobs_found counts the jobs the board saved before it was killed (boards
+    save each job immediately), so reports see what the run delivered.
+    """
     with get_db() as conn:
-        return conn.execute("UPDATE runs SET status=?, error=?, finished_at=? WHERE batch_id IS ? AND source=?"
+        return conn.execute("UPDATE runs SET status=?, error=?, finished_at=?,"
+                            " jobs_found=(SELECT COUNT(*) FROM jobs j WHERE j.source=runs.source"
+                            " AND j.scraped_at>=runs.started_at) WHERE batch_id IS ? AND source=?"
                             " AND status IN ('running', 'interrupted')",
                             (status, error, now_str(), batch_id, source)).rowcount
 

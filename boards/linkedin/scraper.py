@@ -185,6 +185,7 @@ class LinkedInJobSpider(Spider):
 
         self._page_jobs: list[dict] = []
         self.listings: dict[str, str] = {}  # known job id -> current listing time
+        self.on_job = None  # board.save_now: persist each job as soon as it is scraped
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -376,6 +377,8 @@ class LinkedInJobSpider(Spider):
                 if job:
                     self._page_jobs.append(job)
                     self.seen_ids.add(str(job_id))
+                    if self.on_job:
+                        self.on_job(job)
 
         if jobs_to_scrape_now:
             failures = len(jobs_to_scrape_now) - len(self._page_jobs)
@@ -628,9 +631,13 @@ class LinkedInJobSpider(Spider):
             yield job
 
 
-def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None) -> dict:
-    """Run the spider. Returns {'items': [...], 'login_redirect': bool}."""
+def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None, on_job=None) -> dict:
+    """Run the spider. Returns {'items': [...], 'login_redirect': bool}.
+
+    `on_job(job)` is called for each job as soon as it is scraped.
+    """
     spider = LinkedInJobSpider(selectors=selectors, cdp_url=cdp_url)
+    spider.on_job = on_job
     if health is not None:
         spider.health = health
     result = spider.start()

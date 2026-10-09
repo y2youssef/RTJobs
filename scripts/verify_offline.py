@@ -507,7 +507,31 @@ def verify(directory):
         assert last_run()[0] == "timeout" and "time budget" in alert.call_args.args[1]
         assert Slow(None).run() == 0 and alert.call_count == 1
         assert Patient(None).run() == 0 and last_run()[0] == "ok"
-    print("PASS board run() template: error alert once per episode, interrupt status kept, skip before Chrome, no leaked running rows, time budget")
+        # Jobs are saved the moment they are scraped: a run stopped by its
+        # budget keeps them (it used to lose all of them), and finish_scrape()
+        # counts already-saved jobs once.
+        def probe_job(n):
+            return {"source": "wuzzuf", "external_id": f"save-now-{n}", "title": f"T{n}", "company": "C",
+                    "posted_at": "2026-10-09 17:00", "description": "d", "link": f"https://x/{n}", "extra": {}}
+        class Stopped(Probe):
+            def scrape(self, cdp, record):
+                self.save_now(probe_job(1)); self.save_now(probe_job(2))
+                time.sleep(2)
+                return 0
+        class Partial(Probe):
+            def scrape(self, cdp, record):
+                self.save_now(probe_job(3))
+                from core.scrape_health import ScrapeHealth
+                return self.finish_scrape(record, ScrapeHealth("wuzzuf"), [probe_job(3), probe_job(4)])
+        assert Stopped(None).run() == 0
+        with db.get_db() as conn:
+            row = conn.execute("SELECT status, jobs_found FROM runs WHERE source='wuzzuf' ORDER BY id DESC LIMIT 1").fetchone()
+            kept = conn.execute("SELECT COUNT(*) FROM jobs WHERE external_id IN ('save-now-1','save-now-2')").fetchone()[0]
+        assert tuple(row) == ("timeout", 2) and kept == 2, (tuple(row), kept)
+        assert Partial(None).run() == 2
+        with db.get_db() as conn:
+            assert conn.execute("SELECT jobs_found FROM runs WHERE source='wuzzuf' ORDER BY id DESC LIMIT 1").fetchone()[0] == 2
+    print("PASS board run() template: error alert once per episode, interrupt status kept, skip before Chrome, no leaked running rows, time budget, jobs saved as scraped")
 
     # A completed browser/spider with failed data checks must record degraded,
     # while retaining valid partial results. Healthy empty/new runs remain ok.
@@ -521,7 +545,7 @@ def verify(directory):
         stack.enter_context(patch.object(li_board.login_state, "should_wipe_profile", return_value=False))
         for module, cls in ((li_board, li_board.LinkedInBoard), (wu_board, wu_board.WuzzufBoard), (in_board, in_board.IndeedBoard)):
             for healthy in (False, True):
-                def fake_scrape(selectors, cdp_url, health):
+                def fake_scrape(selectors, cdp_url, health, on_job=None):
                     health.check("search_fetch", True)
                     health.check("search_structure", healthy, "Simulated incomplete page")
                     items = [dict(base, source=cls.name, external_id="status-test-" + str(healthy))]
@@ -827,6 +851,8 @@ def verify_first_page_and_schedule():
     assert abs(board_budget.active_seconds(100.0, str(state), now=200.0) - 50) < 1e-6
     batch = entry.db.start_scrape_batch()
     stuck_run = entry.db.start_run("indeed")
+    entry.db.save_jobs([{"source": "indeed", "external_id": "killed-run-job", "title": "T", "company": "C",
+                         "posted_at": None, "description": "d", "link": "https://x", "extra": {}}])
     plan.update(linkedin=(0.2, 0), wuzzuf=(0.2, 0), indeed=(3600, 0))
     killed_groups = []
     with patch.object(entry, "_spawn_board", side_effect=spawn), patch.object(entry, "BOARD_TIME_BUDGET_SECONDS", 0), \
@@ -840,7 +866,8 @@ def verify_first_page_and_schedule():
     assert spawned["indeed"].signals == [signal.SIGTERM] and killed_groups == [424242]
     assert not spawned["linkedin"].signals, "boards within budget are left alone"
     with entry.db.get_db() as conn:
-        assert conn.execute("SELECT status FROM runs WHERE id=?", (stuck_run,)).fetchone()[0] == "timeout"
+        assert tuple(conn.execute("SELECT status, jobs_found FROM runs WHERE id=?", (stuck_run,)).fetchone()) == ("timeout", 1), \
+            "a killed run reports the jobs it saved before the kill"
     assert alert.call_args.args[0] == "indeed" and not alert.call_args.args[1]["time_budget"][0]
     entry.db.finish_scrape_batch(batch)
     # A child attaches to the parent's batch and runs exactly its board.
@@ -1001,6 +1028,7 @@ def verify_linkedin_login():
 
 def verify_browser_recovery():
     from boards.linkedin import scraper as li
+    from boards.indeed import scraper as indeed
     from boards.base import load_board_selectors
     from core.browser_diagnostics import BrowserDiagnostics
     from core import db
@@ -1139,6 +1167,26 @@ def verify_browser_recovery():
         assert not checks["full_page"]["good"] and "Only 7 of 25" in checks["full_page"]["detail"]
         checks = await scan([25], ids[:24] + [None])
         assert not checks["card_ids"]["good"] and "1 of 25" in checks["card_ids"]["detail"]
+        # Each new job is handed to the board (save_now) as soon as it is scraped.
+        saved = []
+        fresh = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        fresh.on_job = saved.append
+        with patch.object(fresh, "_wait_for_search", AsyncMock(return_value=True)), \
+                patch.object(fresh, "_scrape_card", AsyncMock(side_effect=lambda page, card, job_id: {"external_id": job_id})), \
+                patch.object(db, "seen_ids_for", return_value=set()):
+            await fresh.deep_scan_page(ListPage(GrowingList([25], ids)))
+        assert [job["external_id"] for job in saved] == ids
+        view = (ROOT / "markup/indeed/newjob_sample.html").read_text()
+        detail_spider = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
+        detail_saved = []
+        detail_spider.on_job = detail_saved.append
+        key = indeed._jobkey_from_url("https://eg.indeed.com/viewjob?jk=abc123") or "abc123"
+        detail_spider._pending[key] = {"source": "indeed", "external_id": key, "extra": {}}
+        class DetailPage:
+            url = f"https://eg.indeed.com/viewjob?jk={key}"
+            async def content(self): return view
+        await detail_spider.scan_detail_page(DetailPage(), key=key)
+        assert [job["external_id"] for job in detail_saved] == [key]
         # Slow link: the rest of the list arrives in one late jump. A still
         # count is not "settled" while LinkedIn data requests are in flight.
         class SlowList(GrowingList):
