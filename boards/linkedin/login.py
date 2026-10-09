@@ -5,19 +5,17 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 from urllib.parse import urlsplit
 
 from config import (
     CHECKPOINT_WAIT_SECONDS,
-    KILL_CHROME_ON_START,
     LINKEDIN_EMAIL,
     LINKEDIN_LOGIN_URL,
     LINKEDIN_PASSWORD,
     LINKEDIN_PROFILE_DIR,
 )
-from core import login_state, markup
+from core import board_budget, login_state, markup
 from core.human import human_wait, type_delay
 from core.telegram import notify_failure
 
@@ -33,23 +31,6 @@ _CHECKPOINT = re.compile(r"(checkpoint|security_verification|challenge)")
 # Destinations that end the post-load redirect wait (never "login": the
 # current URL already matches it).
 _LANDED = re.compile(r"(/feed|checkpoint|security_verification|challenge)")
-
-
-def kill_zombie_chrome():
-    """Kill stray chrome processes (container safety net, opt-in).
-
-    Stale profile lock cleanup lives in core.browser.launch_cdp_chrome
-    (clean_locks=True), right before each launch.
-    """
-    if not KILL_CHROME_ON_START:
-        return
-    logger.info("[login] Killing stray Chrome processes...")
-    try:
-        subprocess.run(
-            ["pkill", "-f", "chrome"], capture_output=True, timeout=10
-        )
-    except Exception:
-        pass
 
 
 def wipe_profile():
@@ -129,12 +110,13 @@ def _handle_checkpoint(page, selectors: dict) -> bool:
         hint="Attach: http://localhost:9222 (chrome://inspect)",
     )
 
-    deadline = time.time() + CHECKPOINT_WAIT_SECONDS
-    while time.time() < deadline:
-        time.sleep(5)
-        if _is_logged_in(page):
-            logger.info("[login] Checkpoint solved — resuming.")
-            return True
+    with board_budget.paused():  # waiting for a person, not the site
+        deadline = time.time() + CHECKPOINT_WAIT_SECONDS
+        while time.time() < deadline:
+            time.sleep(5)
+            if _is_logged_in(page):
+                logger.info("[login] Checkpoint solved — resuming.")
+                return True
 
     logger.warning("[login] Checkpoint not solved in time — aborting run.")
     notify_failure(

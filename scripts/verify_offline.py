@@ -47,7 +47,10 @@ def main():
         os.environ.update(PYTHON_DOTENV_DISABLED="1", TELEGRAM_TOKEN="offline",
             TELEGRAM_CHAT_ID="-1001", TELEGRAM_FAILURE_CHAT_ID="-1002",
             OPENROUTER_API_KEY="offline", DATA_DIR=directory, MARKUP_DIR=isolated_markup(directory),
-            ENRICHMENT_ENABLED="true", CLASSIFIED_DELIVERY_ENABLED="true", TELEGRAM_CHANNELS_JSON="", LOG_FILE="")
+            ENRICHMENT_ENABLED="true", CLASSIFIED_DELIVERY_ENABLED="true", TELEGRAM_CHANNELS_JSON="", LOG_FILE="",
+            # Never spawn real board processes (they would launch Chrome and hit
+            # the live sites); parallel orchestration is tested with fakes.
+            BOARDS_PARALLEL="false")
         with patch("requests.sessions.Session.request", side_effect=AssertionError("Network forbidden")):
             verify(directory)
     subprocess.run([sys.executable, str(ROOT / "scripts/verify_pipeline.py")], check=True)
@@ -231,6 +234,11 @@ def verify(directory):
     with patch.object(telegram._SESSION, "post", side_effect=post):
         assert telegram._send("-1001", "bad markdown")
     assert payloads[0]["parse_mode"] == "MarkdownV2" and "parse_mode" not in payloads[1]
+    # Idle gaps drop pooled sockets (Telegram closes them); bursts reuse them.
+    with patch.object(telegram._SESSION, "close") as reset:
+        telegram._last_request = 0.0
+        telegram._session(); telegram._session()
+        assert reset.call_count == 1
     # The plain retry is readable text, not leftover MarkdownV2 escapes.
     payloads.clear()
     responses = iter([SimpleNamespace(ok=False, status_code=400, text="parse error"), SimpleNamespace(ok=True)])
@@ -388,7 +396,6 @@ def verify(directory):
     with ExitStack() as stack:
         stack.enter_context(patch.object(li_board.login_state, "is_blocked", return_value=False))
         stack.enter_context(patch.object(li_board.login_state, "should_wipe_profile", return_value=False))
-        stack.enter_context(patch.object(li_board.login, "kill_zombie_chrome"))
         for module, cls in ((li_board, li_board.LinkedInBoard), (wu_board, wu_board.WuzzufBoard), (in_board, in_board.IndeedBoard)):
             with patch.object(board_base, "chrome_session", side_effect=RuntimeError("startup failed")):
                 try:
@@ -416,7 +423,9 @@ def verify(directory):
     with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")), \
             patch.object(tg, "notify_failure", return_value=True) as alert:
         assert Probe(RuntimeError("boom")).run() == 0
-        assert last_run() == ("error", "boom") and alert.call_args.args[0] == "Probe board failed"
+        assert last_run() == ("error", "boom") and "Probe board failed: boom" in alert.call_args.args[1]
+        assert Probe(RuntimeError("boom again")).run() == 0
+        assert alert.call_count == 1, "a board failing every run must alert once per episode"
         try:
             Probe(SystemExit(0)).run()
         except SystemExit:
@@ -430,7 +439,28 @@ def verify(directory):
     with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")):
         assert Forgetful(None).run() == 0
     assert last_run()[0] == "error" and "without recording" in last_run()[1]
-    print("PASS board run() template: error recorded once, interrupt status kept, skip before Chrome, no leaked running rows")
+    # Time budget: a stuck board is stopped (timeout, one alert); waits for a
+    # person run inside paused() and never count.
+    from core import board_budget
+    class Slow(Probe):
+        def scrape(self, cdp, record):
+            time.sleep(2)
+            return 0
+    class Patient(Probe):
+        def scrape(self, cdp, record):
+            with board_budget.paused():
+                time.sleep(1.2)
+            record.finish("ok")
+            return 0
+    with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")), \
+            patch.object(board_base, "BOARD_TIME_BUDGET_SECONDS", 1), \
+            patch.object(tg, "notify_failure", return_value=True) as alert:
+        started = time.monotonic()
+        assert Slow(None).run() == 0 and time.monotonic() - started < 1.8
+        assert last_run()[0] == "timeout" and "time budget" in alert.call_args.args[1]
+        assert Slow(None).run() == 0 and alert.call_count == 1
+        assert Patient(None).run() == 0 and last_run()[0] == "ok"
+    print("PASS board run() template: error alert once per episode, interrupt status kept, skip before Chrome, no leaked running rows, time budget")
 
     # A completed browser/spider with failed data checks must record degraded,
     # while retaining valid partial results. Healthy empty/new runs remain ok.
@@ -442,7 +472,6 @@ def verify(directory):
     with ExitStack() as stack:
         stack.enter_context(patch.object(li_board.login_state, "is_blocked", return_value=False))
         stack.enter_context(patch.object(li_board.login_state, "should_wipe_profile", return_value=False))
-        stack.enter_context(patch.object(li_board.login, "kill_zombie_chrome"))
         for module, cls in ((li_board, li_board.LinkedInBoard), (wu_board, wu_board.WuzzufBoard), (in_board, in_board.IndeedBoard)):
             for healthy in (False, True):
                 def fake_scrape(selectors, cdp_url, health):
@@ -686,6 +715,52 @@ def verify_first_page_and_schedule():
     assert kill.called and hard_exit.call_args.args[0] == 128 + signal.SIGTERM
     entry._shutting_down = False
     print("PASS first page only (all cards, no Indeed detail cap), overrun chains the next cycle after releasing the lock")
+
+    # Parallel cycle: every board starts before any finishes; the cycle waits
+    # for the slowest; a failing board fails the cycle; signals reach children.
+    class FakeProc:
+        def __init__(self, seconds, code):
+            self.started, self.seconds, self.code, self.signals = time.monotonic(), seconds, code, []
+            self.returncode = None
+        def poll(self):
+            if self.returncode is None and time.monotonic() - self.started >= self.seconds:
+                self.returncode = self.code
+            return self.returncode
+        def send_signal(self, sig): self.signals.append(sig); self.returncode = -sig
+        def wait(self, timeout=None): return self.poll()
+        def kill(self): self.returncode = -9
+    plan = {"linkedin": (0.6, 0), "wuzzuf": (0.1, 0), "indeed": (0.3, 1)}
+    spawned = {}
+    def spawn(name, batch):
+        spawned[name] = FakeProc(*plan[name]); return spawned[name]
+    boards = [type(name.title(), (), {"name": name, "enabled": True}) for name in plan]
+    with patch.object(entry, "_spawn_board", side_effect=spawn):
+        began = time.monotonic()
+        assert entry._run_parallel(boards) is True  # indeed exited 1
+        assert time.monotonic() - began >= 0.6, "the cycle must wait for the slowest board"
+        assert max(p.started for p in spawned.values()) - min(p.started for p in spawned.values()) < 0.1
+        plan.update(linkedin=(30, 0), wuzzuf=(30, 0), indeed=(30, 0))
+        sleeps = iter([None, SystemExit(0)])
+        def interrupted_sleep(_s):
+            value = next(sleeps)
+            if value: raise value
+        with patch.object(entry.time, "sleep", side_effect=interrupted_sleep):
+            try:
+                entry._run_parallel(boards)
+            except SystemExit:
+                pass
+        assert all(p.signals == [signal.SIGTERM] for p in spawned.values()), "SIGTERM must reach every board"
+    # A child attaches to the parent's batch and runs exactly its board.
+    seen = {}
+    class ChildBoard:
+        name, enabled = "wuzzuf", True
+        def run(self): seen["batch"] = entry.db.active_batch(); return 0
+    with patch.object(entry, "BOARDS", [ChildBoard]), patch.object(entry, "_install_signal_handlers"), \
+            patch.object(entry, "_record_config_health"), \
+            patch.object(entry.sys, "argv", ["main.py", "--board", "wuzzuf", "--batch-id", "41"]):
+        assert entry.main() == 0 and seen["batch"] == 41
+    entry.db.set_active_batch(None)
+    print("PASS parallel boards: all start together, cycle waits for the slowest, failures and SIGTERM propagate; child joins the batch")
 
     # A broken selectors.json (live-editable bind mount) skips only that board,
     # alerts once per episode, and the exit code reports the failure.

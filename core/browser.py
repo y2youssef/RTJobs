@@ -128,6 +128,23 @@ def _port_in_use(port: int) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
+def kill_stray_chrome() -> None:
+    """Kill every Chrome process left from a crashed run (container only).
+
+    Runs ONCE per cycle in main.py BEFORE any board starts: with boards in
+    parallel, a per-board `pkill -f chrome` would kill the other boards'
+    browsers. Stale profile locks are cleared per launch (clean_locks).
+    """
+    from config import KILL_CHROME_ON_START
+    if not KILL_CHROME_ON_START:
+        return
+    logger.info("[browser] Killing stray Chrome processes...")
+    try:
+        subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
 def chrome_args(chrome: str, profile_dir: str, port: int, headless: bool = False,
                 no_sandbox: bool | None = None) -> list[str]:
     """Launch flags. The DevTools WebSocket only accepts DevTools frontends:

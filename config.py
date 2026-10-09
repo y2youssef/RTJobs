@@ -45,6 +45,16 @@ _no_sandbox = os.environ.get("CHROME_NO_SANDBOX", "auto").lower()
 CHROME_NO_SANDBOX = os.path.exists("/.dockerenv") if _no_sandbox == "auto" else _no_sandbox == "true"
 del _no_sandbox
 
+# Boards run as parallel child processes (own Chrome + CDP port each:
+# CHROME_DEBUG_PORT + 0/1/2 for LinkedIn/Wuzzuf/Indeed) inside ONE cycle, so a
+# cycle lasts as long as its slowest board. false = one after another.
+BOARDS_PARALLEL = os.environ.get("BOARDS_PARALLEL", "true").lower() == "true"
+# Wall-clock cap per board run, excluding waits for a person (checkpoint /
+# emailed code). Normal runs take 5-30s, Cloudflare solves ~135s.
+BOARD_TIME_BUDGET_SECONDS = int(os.environ.get("BOARD_TIME_BUDGET_SECONDS", "300"))
+if BOARD_TIME_BUDGET_SECONDS < 60:
+    raise ValueError("BOARD_TIME_BUDGET_SECONDS must be at least 60")
+
 # Kill stray chrome processes before starting (container-only safety net)
 KILL_CHROME_ON_START = os.environ.get("KILL_CHROME_ON_START", "false").lower() == "true"
 

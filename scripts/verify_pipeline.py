@@ -30,7 +30,7 @@ def isolated_markup(directory) -> str:
 def main():
     logging.disable(logging.CRITICAL)
     with tempfile.TemporaryDirectory(prefix='rtjobs-pipeline-test-') as directory:
-        os.environ.update(PYTHON_DOTENV_DISABLED='1', DATA_DIR=directory, MARKUP_DIR=isolated_markup(directory), LOG_FILE='',
+        os.environ.update(PYTHON_DOTENV_DISABLED='1', BOARDS_PARALLEL='false', DATA_DIR=directory, MARKUP_DIR=isolated_markup(directory), LOG_FILE='',
             TELEGRAM_TOKEN='x', TELEGRAM_CHAT_ID='1', TELEGRAM_TEST_ID='2', TELEGRAM_FAILURE_CHAT_ID='2',
             OPENROUTER_API_KEY='x', ENRICHMENT_ENABLED='true', CLASSIFIED_DELIVERY_ENABLED='true',
             TELEGRAM_CHANNELS_JSON='', CLASSIFIER_DAILY_BUDGET_USD='10', CLASSIFIER_MAX_INPUT_CHARS='0')

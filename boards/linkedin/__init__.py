@@ -54,10 +54,8 @@ class LinkedInBoard(JobBoard):
             logger.info("[linkedin] Cooldown over, retry count maxed — wiping profile once.")
             login.wipe_profile()
             login_state.mark_profile_wiped()
-
-        # Clean up zombie Chrome from crashed runs — must happen BEFORE we
-        # start our own browser (inside a page_action it would kill itself).
-        login.kill_zombie_chrome()
+        # Stray-Chrome cleanup runs once per cycle in main.py, before any
+        # board starts (boards run in parallel; see core.browser.kill_stray_chrome).
         return None
 
     def scrape(self, cdp: str, record) -> int:

@@ -25,7 +25,7 @@ from config import (
     INDEED_LOGIN_URL,
     TELEGRAM_FAILURE_CHAT_ID,
 )
-from core import db, markup, telegram
+from core import board_budget, db, markup, telegram
 from core.human import human_wait, type_delay
 from core.telegram import notify_failure
 
@@ -385,7 +385,8 @@ def _do_login(page, selectors: dict) -> bool:
         return False
 
     window, msg_id = _alert_for_code()
-    code = _wait_for_code(page, sel["code_input"], window, msg_id)
+    with board_budget.paused():  # waiting for a person, not the site
+        code = _wait_for_code(page, sel["code_input"], window, msg_id)
     if not code:
         notify_failure(
             "Indeed login code missing",

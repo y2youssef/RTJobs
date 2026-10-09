@@ -483,6 +483,17 @@ def pending_enrichment_batch() -> list[sqlite3.Row]:
             (batch[0],)).fetchall()
 
 
+def active_batch() -> int | None:
+    return _active_scrape_batch
+
+
+def set_active_batch(batch_id: int | None):
+    """Attach this process's saves/runs to a cycle started by another process
+    (main.py runs each board as a child of the cycle's parent)."""
+    global _active_scrape_batch
+    _active_scrape_batch = batch_id
+
+
 def start_scrape_batch() -> int:
     global _active_scrape_batch
     with get_db() as conn:

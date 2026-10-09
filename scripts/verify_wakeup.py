@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 def main():
     logging.disable(logging.CRITICAL)
     with tempfile.TemporaryDirectory(prefix='rtjobs-wake-') as directory:
-        os.environ.update(PYTHON_DOTENV_DISABLED='1', PYTHONPATH=str(ROOT), DATA_DIR=directory,
+        os.environ.update(PYTHON_DOTENV_DISABLED='1', BOARDS_PARALLEL='false', PYTHONPATH=str(ROOT), DATA_DIR=directory,
             MARKUP_DIR=isolated_markup(directory), LOG_FILE='', TELEGRAM_TOKEN='x', TELEGRAM_CHAT_ID='1',
             OPENROUTER_API_KEY='x', ENRICHMENT_ENABLED='true', CLASSIFIED_DELIVERY_ENABLED='true',
             TELEGRAM_CHANNELS_JSON='')

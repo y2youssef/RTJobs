@@ -48,7 +48,7 @@ LINKEDIN_PASSWORD=...
 # Optional (defaults shown)
 HEADLESS=false                # docker sets this via compose
 DATA_DIR=.                    # docker: /data
-CHROME_DEBUG_PORT=9222        # remote debugging port
+CHROME_DEBUG_PORT=9222        # remote debugging port (LinkedIn; Wuzzuf 9223, Indeed 9224)
 CHECKPOINT_WAIT_SECONDS=600   # pause for manual 2FA/checkpoint solve
 MAX_LOGIN_RETRIES=3
 LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS=3 # three navigation attempts, with a pause

@@ -5,7 +5,9 @@ import json
 import os
 from abc import ABC, abstractmethod
 
-from config import CHROME_DEBUG_PORT, HEADLESS, KILL_CHROME_ON_START, MARKUP_DIR
+from config import (BOARD_TIME_BUDGET_SECONDS, CHROME_DEBUG_PORT, HEADLESS,
+                    KILL_CHROME_ON_START, MARKUP_DIR)
+from core.board_budget import BoardTimeout, time_budget
 from core.browser import chrome_session, install_cdp_default_context_patch
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,19 @@ def persist_jobs(source: str, items: list[dict], listings: dict[str, str] | None
     return new_count
 
 
+def report_run_checks(source: str, checks: dict[str, tuple[bool, str]]):
+    """Run-level health (crash, time budget, selector config) with the usual
+    once-per-episode alert dedupe: a board failing every 3 minutes alerts
+    once, and the check recovers when a run completes normally."""
+    from core.scrape_health import ScrapeHealth
+
+    health = ScrapeHealth(source)
+    for name, (good, detail) in checks.items():
+        health.check(name, good, detail)
+    health.report(require_search=False, subject=f"{source}: board run failing",
+                  hint="Repeats are suppressed until a run of this board completes normally.")
+
+
 def load_board_selectors(site: str) -> dict:
     """Load <MARKUP_DIR>/<site>/selectors.json. Raises FileNotFoundError
     if the config is missing (startup fails loudly instead of scraping blind)."""
@@ -87,6 +102,8 @@ class JobBoard(ABC):
     title: str = "Base"  # alert wording: "<title> board failed"
     enabled: bool = True
     profile_dir: str = ""
+    # CDP port = CHROME_DEBUG_PORT + offset, so boards can run in parallel.
+    port_offset: int = 0
 
     def __init__(self):
         self.selectors = load_board_selectors(self.name)
@@ -96,8 +113,6 @@ class JobBoard(ABC):
 
         Returns the number of newly scraped jobs (0 is a valid result).
         """
-        from core import telegram
-
         record = RunRecord(self.name)
         try:
             skip = self.before_browser()
@@ -105,17 +120,28 @@ class JobBoard(ABC):
                 record.finish(skip)
                 return 0
             install_cdp_default_context_patch()
-            with chrome_session(self.profile_dir, CHROME_DEBUG_PORT, headless=HEADLESS,
+            with chrome_session(self.profile_dir, CHROME_DEBUG_PORT + self.port_offset, headless=HEADLESS,
                                 clean_locks=KILL_CHROME_ON_START) as cdp:
                 try:
-                    return self.scrape(cdp, record)
+                    with time_budget(BOARD_TIME_BUDGET_SECONDS):
+                        new_count = self.scrape(cdp, record)
+                    report_run_checks(self.name, {"board_run": (True, ""), "time_budget": (True, "")})
+                    return new_count
+                except BoardTimeout:
+                    detail = (f"{self.title} exceeded its {BOARD_TIME_BUDGET_SECONDS}s time budget and was "
+                              "stopped so the other boards' jobs are not held back; jobs from this run "
+                              "were not saved and the next run retries.")
+                    record.finish("timeout", error=detail)
+                    logger.error(f"[{self.name}] {detail}")
+                    report_run_checks(self.name, {"time_budget": (False, detail)})
+                    return 0
                 except SystemExit:
                     record.finish("interrupted", error="terminated by signal")
                     raise
                 except Exception as exc:
                     record.finish("error", error=str(exc))
-                    telegram.notify_failure(f"{self.title} board failed", str(exc))
                     logger.error(f"[{self.name}] Run failed: {exc}")
+                    report_run_checks(self.name, {"board_run": (False, f"{self.title} board failed: {exc}"[:600])})
                     return 0
         except BaseException as exc:
             # Chrome launch failures and interrupts outside scrape().

@@ -21,6 +21,7 @@ class WuzzufBoard(JobBoard):
     title = "Wuzzuf"
     enabled = WUZZUF_ENABLED
     profile_dir = WUZZUF_PROFILE_DIR
+    port_offset = 1
 
     def scrape(self, cdp: str, record) -> int:
         health = ScrapeHealth(self.name)

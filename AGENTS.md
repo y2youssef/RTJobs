@@ -5,7 +5,9 @@ Headful job-board scraper. Scrapes LinkedIn (login-gated) and Wuzzuf
 (Cloudflare-gated) via [scrapling](https://scrapling.readthedocs.io) stealth
 browser sessions, persists jobs to SQLite, posts new jobs to one Telegram
 channel and failure alerts to another. Scheduled in Docker via ofelia
-(every `SCRAPE_INTERVAL_MINUTES`, default 3; ONE search page per board per run). Chrome runs headful under Xvfb with CDP on port 9222 for
+(every `SCRAPE_INTERVAL_MINUTES`, default 3; ONE search page per board per run;
+boards run in PARALLEL child processes inside one cycle). Chrome runs headful under Xvfb with CDP on
+ports 9222/9223/9224 (LinkedIn/Wuzzuf/Indeed) for
 live debugging / manual 2FA solves.
 
 ## Commands
@@ -23,7 +25,8 @@ extraction/parsing functions against the fixture files in `markup/` (see
 
 ## Architecture
 ```
-main.py                  orchestrator; BOARDS list; --reset-login
+main.py                  orchestrator: cycle lock/batch/chaining; parallel `--board` children; --reset-login
+core/board_budget.py     per-board time budget (SIGALRM; paused() around waits for a person)
 config.py                ALL env config (single source of truth)
 core/db.py               SQLite: raw jobs, dedupe, runs, enrichment/cache/spend, scrape_health
 core/scrape_health.py    parser checks + persistent error-channel alert dedupe
@@ -115,8 +118,10 @@ description, link, extra(dict), scraped_at`.
    `CHECKPOINT_WAIT_SECONDS` for a manual solve over CDP. Profile wipe
    (after max retries + cooldown) must happen BEFORE the browser starts
    (`LinkedInBoard.run`), never inside a page_action of a live Chrome. Same
-   for `kill_zombie_chrome()` — inside a page_action `pkill -f chrome`
-   kills the running browser itself (shipped once).
+   for stray-Chrome cleanup: `core.browser.kill_stray_chrome()` (`pkill -f chrome`)
+   runs ONCE per cycle in main.py before any board starts — inside a page_action
+   it killed the running browser (shipped once), and per board it would kill the
+   other parallel boards' browsers.
 6. **Container Chrome startup chain** (each one shipped as a bug):
    a. `docker/entrypoint.sh` starts Xvfb and `exec`s the command. Do NOT go
       back to `xvfb-run` in production: its shell sat between tini and
@@ -130,7 +135,7 @@ description, link, extra(dict), scraped_at`.
       `HOME=/home/scraper`.
    d. After a killed Chrome the profile keeps `Singleton*` lock files →
       next launch fails with "profile appears to be in use";
-      `kill_zombie_chrome` removes them (container mode only).
+      `clean_locks` (KILL_CHROME_ON_START) removes them before each launch.
    e. Container TZ defaults to UTC; compose pins `TZ=Africa/Cairo`. Stored
       timestamps are UTC by design (core/clock.py), but TZ still drives
       `posted_at` (local), the budget day, alert rendering and the one-time
@@ -277,13 +282,26 @@ Set dummy env before importing config in test scripts:
   `scraped_at` now always has seconds (`HH:MM:SS`); older rows had `HH:MM`
   and gained `:00` in the migration — parse with `datetime.fromisoformat`.
 
+## Parallel cycle, time budget (2026-10-09)
+- `BOARDS_PARALLEL=true`: main.py spawns `main.py --board <name> --batch-id N` per
+  enabled board; each has its own Chrome/profile and CDP port
+  (CHROME_DEBUG_PORT + port_offset). The parent owns the lock, the scrape batch
+  (ONE classifier request per cycle) and overrun chaining, forwards SIGTERM, and
+  closes the cycle when the slowest child exits. Child logs: `scraper-<board>.log`
+  (one writer per rotating file). Tests force BOARDS_PARALLEL=false so they can
+  never spawn real boards (that once launched real Chrome against live sites).
+- `BOARD_TIME_BUDGET_SECONDS=300` (core/board_budget.py): BoardTimeout is a
+  BaseException so browser code's `except Exception` cannot swallow it; wrap
+  every wait for a PERSON in `board_budget.paused()` (LinkedIn checkpoint,
+  Indeed emailed code). Timeouts and board crashes alert once per episode
+  (run-health checks `time_budget` / `board_run`), not every run.
+- Telegram's shared session drops pooled sockets after 60s idle: Telegram closes
+  idle keep-alives, and reuse failed the first send after every quiet spell.
+
 ## Backlog (open items; history in docs/archive/IMPROVEMENTS-2026-08-to-10.md)
 - pytest suite + CI: promote scripts/verify_*.py into `tests/` (offline fixtures).
 - Indeed search page: replace the fixed `wait_for_timeout(2500)` with a poll for
   the mosaic jobcards blob (~2.5s off every cycle; pacing unchanged).
-- Boards in parallel (cycle ~= LinkedIn alone, ~30s instead of ~50s): keep ONE
-  cycle per main.py run (whole-cycle classification) and launch the boards
-  concurrently on separate CDP ports/profiles — not separate schedules.
 - Reproducible image: pin the Chrome .deb version (Dockerfile downloads
   `google-chrome-stable_current`) and lock transitive Python dependencies.
 - Retention for latency_events / runs / scrape_batches / enrichment_requests.

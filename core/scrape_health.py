@@ -64,7 +64,7 @@ class ScrapeHealth:
             self.check("field_company", missing * 2 < len(jobs),
                        f"Company missing on {missing}/{len(jobs)} parsed jobs.", html)
 
-    def report(self, require_search: bool = True):
+    def report(self, require_search: bool = True, subject: str | None = None, hint: str | None = None):
         """One error-channel message for new failures; retry unsuccessful alerts.
 
         Persist small diagnostics only. Sanitized snapshots strip scripts; they
@@ -84,10 +84,10 @@ class ScrapeHealth:
             details = "\n".join(f"{name}: {self.checks[name]['detail']}" for name in fresh)
             try:
                 sent = telegram.notify_failure(
-                    f"{self.source}: scraping data check failed",
+                    subject or f"{self.source}: scraping data check failed",
                     details[:1800], self.snapshot,
-                    "Possible layout, loading or access change. Check the snapshot and scraper logs; "
-                    "successful page loading does not guarantee complete data.",
+                    hint or ("Possible layout, loading or access change. Check the snapshot and scraper logs; "
+                             "successful page loading does not guarantee complete data."),
                 )
             except Exception as exc:
                 logger.warning("[%s] Health alert failed: %s", self.source, type(exc).__name__)

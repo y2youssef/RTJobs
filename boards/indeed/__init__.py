@@ -24,6 +24,7 @@ class IndeedBoard(JobBoard):
     title = "Indeed"
     enabled = INDEED_ENABLED
     profile_dir = INDEED_PROFILE_DIR
+    port_offset = 2
 
     def scrape(self, cdp: str, record) -> int:
         outcome: dict = {"ok": False}
