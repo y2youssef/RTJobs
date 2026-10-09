@@ -750,6 +750,32 @@ def verify_first_page_and_schedule():
             except SystemExit:
                 pass
         assert all(p.signals == [signal.SIGTERM] for p in spawned.values()), "SIGTERM must reach every board"
+    # Watchdog: a board stuck past budget+grace (e.g. Playwright swallowed its
+    # own timeout) is stopped from outside, Chrome group included, run -> timeout.
+    from core import board_budget
+    state = Path(tempfile.mkdtemp()) / "board.budget"
+    state.write_text(json.dumps({"paused_total": 30, "paused_since": None}))
+    assert abs(board_budget.active_seconds(100.0, str(state), now=200.0) - 70) < 1e-6
+    state.write_text(json.dumps({"paused_total": 0, "paused_since": 150.0}))
+    assert abs(board_budget.active_seconds(100.0, str(state), now=200.0) - 50) < 1e-6
+    batch = entry.db.start_scrape_batch()
+    stuck_run = entry.db.start_run("indeed")
+    plan.update(linkedin=(0.2, 0), wuzzuf=(0.2, 0), indeed=(3600, 0))
+    killed_groups = []
+    with patch.object(entry, "_spawn_board", side_effect=spawn), patch.object(entry, "BOARD_TIME_BUDGET_SECONDS", 0), \
+            patch.object(entry, "_KILL_GRACE_SECONDS", 0.5), \
+            patch.object(entry.subprocess, "run", return_value=SimpleNamespace(stdout="424242\n")), \
+            patch.object(entry.os, "killpg", side_effect=lambda pid, sig: killed_groups.append(pid)), \
+            patch.object(entry, "report_run_checks") as alert:
+        began = time.monotonic()
+        entry._run_parallel(boards)
+        assert time.monotonic() - began < 5, "a stuck board must not hold the cycle"
+    assert spawned["indeed"].signals == [signal.SIGTERM] and killed_groups == [424242]
+    assert not spawned["linkedin"].signals, "boards within budget are left alone"
+    with entry.db.get_db() as conn:
+        assert conn.execute("SELECT status FROM runs WHERE id=?", (stuck_run,)).fetchone()[0] == "timeout"
+    assert alert.call_args.args[0] == "indeed" and not alert.call_args.args[1]["time_budget"][0]
+    entry.db.finish_scrape_batch(batch)
     # A child attaches to the parent's batch and runs exactly its board.
     seen = {}
     class ChildBoard:
@@ -760,7 +786,7 @@ def verify_first_page_and_schedule():
             patch.object(entry.sys, "argv", ["main.py", "--board", "wuzzuf", "--batch-id", "41"]):
         assert entry.main() == 0 and seen["batch"] == 41
     entry.db.set_active_batch(None)
-    print("PASS parallel boards: all start together, cycle waits for the slowest, failures and SIGTERM propagate; child joins the batch")
+    print("PASS parallel boards: all start together, cycle waits for the slowest, failures and SIGTERM propagate, stuck board killed from outside; child joins the batch")
 
     # A broken selectors.json (live-editable bind mount) skips only that board,
     # alerts once per episode, and the exit code reports the failure.

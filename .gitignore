@@ -23,6 +23,7 @@ login_retries.json
 *.monitor.lock
 *.scraper.lock
 *.wake.sock
+*.budget
 markup/*/snapshots/
 logs/
 *.log

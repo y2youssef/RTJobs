@@ -26,7 +26,9 @@ from boards.indeed import IndeedBoard
 from boards.base import report_run_checks
 from core import browser, db, login_state, timing
 from core.log import setup_logging
-from config import BOARDS_PARALLEL, DB_PATH, ENRICHMENT_ENABLED, SCRAPE_INTERVAL_MINUTES
+from config import (BOARD_TIME_BUDGET_SECONDS, BOARDS_PARALLEL, CHROME_DEBUG_PORT, DB_PATH,
+                    ENRICHMENT_ENABLED, SCRAPE_INTERVAL_MINUTES)
+from core import board_budget
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +216,15 @@ def _run_one_board(board_cls) -> tuple[int, bool]:
         return 0, True
 
 
+# Grace beyond the budget for the child's own (in-process) timeout to stop
+# it cleanly before the parent kills it from outside.
+_KILL_GRACE_SECONDS = 60
+
+
+def _budget_file(name: str) -> str:
+    return f"{DB_PATH}.{name}.budget"
+
+
 def _spawn_board(name: str, batch_id: int | None) -> subprocess.Popen:
     """Start one board as a child process attached to this cycle's batch.
 
@@ -221,6 +232,11 @@ def _spawn_board(name: str, batch_id: int | None) -> subprocess.Popen:
     rotating one file from several processes would lose lines.
     """
     env = dict(os.environ)
+    env[board_budget.STATE_ENV] = _budget_file(name)
+    try:
+        os.remove(_budget_file(name))
+    except OSError:
+        pass
     if env.get("LOG_FILE"):
         base, ext = os.path.splitext(env["LOG_FILE"])
         env["LOG_FILE"] = f"{base}-{name}{ext or '.log'}"
@@ -237,13 +253,21 @@ def _run_parallel(boards: list) -> bool:
     """
     batch = db.active_batch()
     _children.clear()
-    procs = {}
+    procs, started, timed_out = {}, {}, set()
+    ports = {cls.name: CHROME_DEBUG_PORT + getattr(cls, "port_offset", 0) for cls in boards}
     try:
         for cls in boards:
             procs[cls.name] = _spawn_board(cls.name, batch)
+            started[cls.name] = time.time()
             _children.append(procs[cls.name])
         logger.info("Running boards in parallel: %s", ", ".join(procs))
+        limit = BOARD_TIME_BUDGET_SECONDS + _KILL_GRACE_SECONDS
         while any(proc.poll() is None for proc in procs.values()):
+            for name, proc in procs.items():
+                if (proc.poll() is None and name not in timed_out
+                        and board_budget.active_seconds(started[name], _budget_file(name)) > limit):
+                    timed_out.add(name)
+                    _kill_board(name, proc, ports[name], batch)
             time.sleep(0.2)
     finally:
         for proc in procs.values():
@@ -261,6 +285,32 @@ def _run_parallel(boards: list) -> bool:
     if any(codes.values()):
         logger.warning("Board processes exited with %s", codes)
     return any(codes.values())
+
+
+def _kill_board(name: str, proc: subprocess.Popen, port: int, batch: int | None):
+    """Stop a board that blew its budget from outside, Chrome included.
+
+    SIGTERM first (its handler cleans up when it gets the chance), then
+    SIGKILL; its Chrome runs in its own process group, found by CDP port.
+    """
+    detail = (f"{name} exceeded its {BOARD_TIME_BUDGET_SECONDS}s time budget and was stopped by the "
+              "cycle so the other boards' jobs are not held back; the next run retries.")
+    logger.error("[%s] %s", name, detail)
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    found = subprocess.run(["pgrep", "-f", "--", f"--remote-debugging-port={port}"],
+                           capture_output=True, text=True).stdout.split()
+    for pid in found:
+        try:
+            os.killpg(int(pid), signal.SIGKILL)  # browser leads its own group
+        except (ProcessLookupError, PermissionError, ValueError):
+            pass
+    db.finish_stuck_runs(batch, name, "timeout", detail)
+    report_run_checks(name, {"time_budget": (False, detail)})
 
 
 def _board_child(name: str, batch_id: str | None) -> int:

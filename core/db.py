@@ -681,6 +681,14 @@ def start_run(source: str) -> int:
         return cur.lastrowid
 
 
+def finish_stuck_runs(batch_id: int | None, source: str, status: str, error: str) -> int:
+    """Close a board's runs in this batch that its killed process left open."""
+    with get_db() as conn:
+        return conn.execute("UPDATE runs SET status=?, error=?, finished_at=? WHERE batch_id IS ? AND source=?"
+                            " AND status IN ('running', 'interrupted')",
+                            (status, error, now_str(), batch_id, source)).rowcount
+
+
 def finish_run(run_id: int, status: str, jobs_found: int = 0, error: str = ""):
     with get_db() as conn:
         conn.execute(

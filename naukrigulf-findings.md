@@ -1,4 +1,4 @@
-# NaukriGulf board — recon findings (2026-10-08, no code written)
+# NaukriGulf board — recon findings (2026-10-08/09, no code written)
 
 Target: `https://www.naukrigulf.com/jobs-in-egypt?freshness=1&xz=1_3_5`
 Scope of this doc: what is known before implementation, and what must still
@@ -41,11 +41,96 @@ parse the XHR JSON (preferred: structured, no DOM fragility) or fall back to
 an embedded SSR blob / DOM. No second navigation per job. This should make
 NaukriGulf the cheapest board per cycle after Wuzzuf.
 
-## 3. Still unknown (must be captured before implementation)
+## 3. Search API captured (independent browser session, 2026-10-09)
 
-1. **The exact XHR endpoint + query params** (open the target URL in a CDP
-   session, filter Fetch/XHR, copy the search request as cURL — redact
-   cookies). Is it stable across runs, or tokenized per session?
+Reproduced with a separate automation-driven browser (production Chrome
+untouched). The search XHR is:
+
+```http
+GET /spapi/jobapi/search?Experience=&Freshness=1&Keywords=&KeywordsAr=
+  &Limit=30&Location=egypt&LocationAr=&Offset=0&SortPreference=
+  &breadcrumb=1&clusterSelected=1&geoIpCityName=Tanta&geoIpCountryName=Egypt
+  &locationId=&nationality=&nationalityLabel=&pageNo=1&seo=1
+  &showBellyFilters=true&showSponsoredJobs=true&srchId=&topEmployer=true
+  &xz=1_3_5
+Accept: application/json
+```
+
+- **Pagination: `Limit=30` + `Offset=0` + `pageNo=1`** — 30 jobs/page,
+  offset-based. First-page-only default fits naturally.
+- `Freshness=1` + `Location=egypt` mirror the page URL params; `xz=1_3_5`
+  is passed through (experience buckets — exact mapping unverified).
+- Custom headers required: `appid: 205`, `systemid: 2323`,
+  `clientid/client-type/device-type: desktop`, `version: v1`,
+  `accept-format: strict`, plus page `Referer`. The page JS self-reports
+  `puppeteer: false` (header and cookie) — the edge verifies this
+  independently (see §4).
+- Geo params (`geoIpCityName/Tanta`, `aka_location=Country=EG`) derive from
+  the egress IP; explicit `Location=egypt` should dominate, but verify from
+  a non-EG IP (e.g. the future Oracle region) before assuming.
+- `isJsLoggedIn=false`: search is public, **no login needed** (confirmed).
+
+## 4. Protection: Akamai Bot Manager, escalating soft-block (observed)
+
+Sequence in the automation-driven browser (fresh profile, no stealth):
+
+1. Document `GET` → **200**, shell renders.
+2. Search/dropdown/analytics XHRs → **`net::ERR_HTTP2_PROTOCOL_ERROR`**
+   (stream reset); page shows *"Oops! Something went wrong"*.
+3. Reload → document itself **reset** (`ERR_HTTP2_PROTOCOL_ERROR`).
+
+Same H2-reset signature as the `curl` probes in §1 — but note the operator's
+real browser receives the descriptions fine. Corroborating signals:
+
+- `POST /akam/13/pixel_*` → 200: the **Akamai BM sensor beacon** runs and
+  the edge issued `ak_bmsc` / `bm_sv` cookies — behavioral fingerprinting
+  is engaged, not just a static challenge.
+- `ERR_NETWORK_CHANGED` appeared once mid-load, so a transient network
+  flap cannot be excluded as a contributor; the consistent cross-client
+  pattern (curl + automation browser, 5+ resets) still points at
+  fingerprint-based filtering first.
+
+Consequences (strengthen §1): the shell is served to collect sensor data,
+then API/stream access is withdrawn — the standard BM soft-block. The
+production stealth stack (real Chrome binary, persistent profile with
+clearance, `webdriver=false`, human pacing — the Wuzzuf model) is the
+tool built for exactly this; a successful sensor history in the profile
+is likely what separates the operator's working browser from a fresh one.
+Expect the first live run to need observation and possibly one manual
+session before the profile is trusted.
+
+## 4b. Root cause of the automation failures (isolated 2026-10-09)
+
+Same host and same egress IP as the operator's working browser, so IP
+reputation is ruled out — the difference is purely client-side:
+
+- **`navigator.webdriver=true`** in the automation-driven sessions (real
+  browsers report `false`). This is the primary tell Akamai's sensor
+  reads. Everything else looked normal (plugins 5, mimeTypes 2, real
+  screen/TZ/CPU values, UA Chrome/155 Linux).
+- **Fresh profile, no trust history**: the edge issued sensor cookies
+  (`ak_bmsc`, `bm_sv`) but never the `_abck` validation cookie — the
+  sensor reported, the verdict was "automation", trust was never granted.
+- **Escalation observed live**: document 200 (shell must load so the
+  sensor JS runs) → search/dropdown/analytics XHRs reset → reload resets
+  even the document. The edge caches the verdict per client.
+- The page's own `puppeteer:false` self-report (header + cookie) disagrees
+  with the sensor verdict — that mismatch can only hurt.
+
+Why the production stack should pass where these sessions failed: real
+Chrome binary (not CDP-driven Chromium defaults), a persistent profile
+that accumulates successful sensor history across runs, stealth patches
+(`webdriver=false`, the `patch_no_load_wait`/context discipline in
+`core/browser.py`), headed rendering under Xvfb, and human pacing —
+i.e. every property the flagged sessions lacked.
+
+Operational caution: repeated failing visits from one flagged client can
+spill onto shared egress-IP reputation and break the operator's working
+browser too. Recon probing from automation is now STOPPED for this site;
+further contact should be the production stealth stack (or the operator's
+own browser) only.
+
+## 5. Still unknown (must be captured before implementation)
 2. **Pagination scheme** (page index? cursor? `start=`?) and total-result
    counts — decides first-page-only shape (repo default) and any stop rule.
 3. **Job identity rule**: job URL shape and which component is the stable
@@ -59,7 +144,7 @@ NaukriGulf the cheapest board per cycle after Wuzzuf.
 7. No login is expected (public site) — confirm no auth redirect like
    Indeed's bot-detection login.
 
-## 4. Implementation checklist (repo conventions, for the build phase)
+## 6. Implementation checklist (repo conventions, for the build phase)
 
 - `boards/naukrigulf/`: `scraper.py` (`NaukriGulfJobSpider(Spider)`:
   `configure_sessions` + `manager.add` + `sid=` routing, per-request
@@ -92,14 +177,17 @@ NaukriGulf the cheapest board per cycle after Wuzzuf.
   (protection behavior, identity rule, date format).
 - Dockerfile: no change expected (system Chrome + Xvfb already present).
 
-## 5. Suggested next step (15 min, no code)
+## 7. Suggested next step (15 min, no code)
 
-One manual CDP session against the target URL: record the XHR search
-request (URL, params, response shape — one sample job), note pagination
-and date format, save a sanitized fixture to `markup/naukrigulf/`. That
-unblocks the full implementation in one pass.
 
-## 6. Effort / risk estimate
+Capture ONE successful search response (real browser with trusted sensor
+history, or the stealth stack once built): response shape — one sample job
+— plus the posted-date format, then save a sanitized fixture to
+`markup/naukrigulf/`. That unblocks the full implementation in one pass.
+(The automation-driven session above never got a 200 on the API, so the
+response schema is the one remaining capture item.)
+
+## 8. Effort / risk estimate
 
 - Likely ~1 focused session: Wuzzuf is the closest template (gated site,
   blob/JSON parsing, profile persistence); subtract LinkedIn's login and
