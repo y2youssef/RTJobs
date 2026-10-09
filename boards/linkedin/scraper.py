@@ -364,9 +364,11 @@ class LinkedInJobSpider(Spider):
                     stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
                     break
                 stage = "scrolling the results list"
-                for _ in range(4):
-                    await self._scroll_results(page, 1000, timeout=remaining_ms())
-                    await asyncio.sleep(0.8)
+                # One scroll starts the list's lazy load (the job-cards API
+                # call); _settled_cards keeps scrolling until every card is in
+                # and waits while LinkedIn data is still loading. The former
+                # fixed 4 x (1000px + 0.8s) cost 3.2s on every run.
+                await self._scroll_results(page, None, timeout=remaining_ms())
                 if attempt or extended:
                     logger.info("[linkedin] Search recovered after %s retry%s; continuing normal extraction.",
                                 attempt, " and a slow-asset wait" if extended else "")
