@@ -230,3 +230,30 @@ saves, LinkedIn direct search and job/cards API data, Indeed single load,
 Cloudflare fast path) and the NaukriGulf board (`NAUKRIGULF_ENABLED=false`).
 Deploy with `--build` (the Dockerfile gains the naukrigulf profile mount
 point and compose a `naukrigulf_profile` volume).
+
+## main 726a07e (cycle latency + NaukriGulf) — deployed 2026-10-09 22:54
+
+`docker compose --profile enrichment up -d --build` from the main checkout;
+image `rtjobs-scraper:production-main-726a07e-20261009` (`3987ea6ab93c`). The
+build took ~40s after the idle check, so the recreate interrupted the 22:54:00
+cycle (cycle row `interrupted`; its LinkedIn run row stayed `running`, nothing
+lost). Next time: build first, then wait for idle right before `up -d`.
+
+NaukriGulf: the `naukrigulf_profile` volume was seeded from the supervised
+staging profile (Akamai cookies + cached app, 23 MB, owner `scraper`), then
+`NAUKRIGULF_ENABLED=true` was added to the private `.env` and the services were
+recreated (22:56:13). Its very first run failed with `ERR_NETWORK_CHANGED`
+during that recreate (one navigation per run, no retry); the next run read
+30/30 jobs and all were classified and delivered.
+
+First 2.5 hours (22:56-01:21, `scripts/report_window.py`): 49 cycles, 44 ok and
+5 degraded; cycle p50 12s (baseline 31s), p90 127s. Quiet runs p50: LinkedIn 7s
+(was 17s), Indeed 5.5s (was 21s), Wuzzuf 5.5s (was 8s), NaukriGulf 5s. LinkedIn
+detail p50 1.6s (was 3.1s), scraped->delivered p50 17s (was 30s). 71 new jobs,
+71 delivered, no coverage gaps, no saturated first page (except NaukriGulf's
+first load). The degraded runs were simultaneous navigation failures across
+boards at 23:57, 00:12 and 01:18 (Telegram itself unreachable at 23:57): host
+network drops; every board recovered on the next run; one Indeed run was
+stopped by the 360s watchdog at 00:12.
+Rollback: retag `hotfix-clean-quit-20261009` (or `production-linkedin-scroll-20261009`)
+as latest, set `NAUKRIGULF_ENABLED=false`, `docker compose --profile enrichment up -d`.

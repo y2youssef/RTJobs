@@ -442,8 +442,11 @@ port and logins disabled — never the production profile directly.
   ~25s. See docs/DEPLOYMENT.md.
 - 2026-10-09 22:46 Cairo: HOTFIX clean Chrome quit (cookies persist) on top of
   `962dbf0`: tag `deploy/hotfix-clean-quit-20261009`, image
-  `hotfix-clean-quit-20261009`. main now also holds the cycle-latency work and
-  the NaukriGulf board (disabled), NOT yet deployed. See docs/DEPLOYMENT.md.
+  `hotfix-clean-quit-20261009`.
+- 2026-10-09 22:54 Cairo: main `726a07e` deployed (image
+  `production-main-726a07e-20261009`): cycle-latency work + NaukriGulf; NaukriGulf
+  enabled 22:56 (profile seeded from the supervised staging profile). First 2.5 h:
+  cycle p50 12s (was 31s), all 71 new jobs delivered. See docs/DEPLOYMENT.md.
 
 ## Immediate queue notifications
 - After committing a complete scrape cycle, notify `enrichment`; after committing
