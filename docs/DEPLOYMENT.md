@@ -211,3 +211,22 @@ Turnstile loop) and LinkedIn (slow detail panels) runs at ~360s.
 Rollback: retag `production-card-list-20261008` as `rtjobs-scraper:latest`
 and `docker compose --profile enrichment up -d` (no schema change to undo;
 the extra table/column are ignored by older code).
+
+## Hotfix: clean Chrome quit — deployed 2026-10-09 22:46
+
+Production code `962dbf0` plus the cookie fix only (tag
+`deploy/hotfix-clean-quit-20261009`, commit `81406a4`; the image was built
+from `2c6df88`, identical code, only the AGENTS.md wording was corrected
+afterwards). Image `rtjobs-scraper:hotfix-clean-quit-20261009`
+(`fe666088d997`), deployed with `docker compose --profile enrichment up -d`
+(no build) between cycles. First cycle (22:46:24-22:46:48): all three boards
+`ok`, and all three profiles' Cookies files were written at the end of a
+24s run (before, only runs longer than 30s saved cookies).
+Rollback: retag `production-linkedin-scroll-20261009` as latest and
+`docker compose --profile enrichment up -d`.
+
+Not deployed yet: main also contains the cycle-latency work (immediate
+saves, LinkedIn direct search and job/cards API data, Indeed single load,
+Cloudflare fast path) and the NaukriGulf board (`NAUKRIGULF_ENABLED=false`).
+Deploy with `--build` (the Dockerfile gains the naukrigulf profile mount
+point and compose a `naukrigulf_profile` volume).

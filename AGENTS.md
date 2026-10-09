@@ -181,12 +181,13 @@ description, link, extra(dict), scraped_at`.
 12. **Stop Chrome with CDP `Browser.close`, never signals first**
     (`core/browser.stop_chrome` -> `_browser_close`). Chrome writes cookies to
     disk every 30s or on a clean shutdown; SIGTERM exits at once WITHOUT that
-    write. Runs end in 7-40s, so until Oct 9 the cookies sites set or
-    refreshed during most runs (LinkedIn session, Indeed login, Cloudflare /
-    Akamai clearance) were thrown away (profile Cookies files untouched for
-    hours while runs continued). Verified in the image's Chrome: cookie set 5s
-    before SIGTERM lost; before Browser.close saved, exit 0.1s. Signals stay
-    the fallback (and the watchdog / second-signal paths).
+    write. Runs end in 7-40s, so until Oct 9 only runs longer than 30s saved
+    cookies; changes made during shorter runs (session refreshes, Cloudflare /
+    Akamai clearance) were lost. A fresh NaukriGulf profile kept none of
+    Akamai's cookies after a 14s run. Verified in the image's Chrome: cookie
+    set 5s before SIGTERM lost; before Browser.close saved, exit 0.1s.
+    Signals stay the fallback (and the watchdog / second-signal paths).
+    (Container `ls` shows UTC: compare file times with `date -u`.)
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
@@ -439,6 +440,10 @@ port and logins disabled — never the production profile directly.
 - 2026-10-09 16:50 Cairo: parallel boards + reposts + LinkedIn cache/scroll fixes
   live (`962dbf0`, image `production-linkedin-scroll-20261009`); quiet cycles
   ~25s. See docs/DEPLOYMENT.md.
+- 2026-10-09 22:46 Cairo: HOTFIX clean Chrome quit (cookies persist) on top of
+  `962dbf0`: tag `deploy/hotfix-clean-quit-20261009`, image
+  `hotfix-clean-quit-20261009`. main now also holds the cycle-latency work and
+  the NaukriGulf board (disabled), NOT yet deployed. See docs/DEPLOYMENT.md.
 
 ## Immediate queue notifications
 - After committing a complete scrape cycle, notify `enrichment`; after committing
