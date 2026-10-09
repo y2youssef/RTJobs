@@ -203,6 +203,7 @@ def launch_cdp_chrome(profile_dir: str, port: int, headless: bool = False,
     # Own process group, so stop_chrome() also ends renderer/GPU/zygote children.
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
     proc._rtjobs_stderr = stderr
+    proc._rtjobs_port = port  # stop_chrome() asks this endpoint for a clean quit
     _LIVE.add(proc)
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/json/version"
@@ -255,13 +256,60 @@ def _leader_exited(proc: subprocess.Popen) -> bool:
         return True
 
 
+def _browser_close(port: int, timeout: float = 2.0) -> bool:
+    """Ask Chrome to quit cleanly over CDP (`Browser.close`). True if sent.
+
+    Chrome writes cookies to disk every 30s or on a clean shutdown, and
+    SIGTERM exits at once WITHOUT that write (verified Oct 9 in the image's
+    Chrome: a cookie set 5s before SIGTERM was gone; after Browser.close it
+    was saved, exit in 0.1s). Runs end in 7-40s, so cookies the sites set or
+    refreshed during a run (LinkedIn session, Indeed login, Cloudflare and
+    Akamai clearance) were lost after most runs. Minimal stdlib WebSocket
+    client: handshake, one masked text frame, no Origin header (allowed by
+    chrome_args); any failure returns False and stop_chrome uses signals.
+    """
+    import base64
+    import json
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as reply:
+            ws_url = json.load(reply)["webSocketDebuggerUrl"]
+        hostport, path = ws_url.split("://", 1)[1].split("/", 1)
+        host, _, ws_port = hostport.partition(":")
+        with socket.create_connection((host, int(ws_port or 80)), timeout=timeout) as sock:
+            key = base64.b64encode(os.urandom(16)).decode()
+            sock.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
+                          f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                          "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+            if b" 101 " not in sock.recv(4096).split(b"\r\n", 1)[0]:
+                return False
+            payload = json.dumps({"id": 1, "method": "Browser.close"}).encode()
+            mask = os.urandom(4)
+            sock.sendall(bytes([0x81, 0x80 | len(payload)]) + mask
+                         + bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))
+            try:
+                sock.recv(1024)  # the reply, or Chrome closing the socket
+            except OSError:
+                pass
+        return True
+    except Exception as exc:
+        logger.info(f"[browser] Clean CDP quit unavailable ({type(exc).__name__}); using signals.")
+        return False
+
+
 def stop_chrome(proc: subprocess.Popen | None) -> None:
-    """Terminate Chrome's whole process group; force-kill stragglers. Idempotent."""
+    """Quit Chrome cleanly (cookies saved), else terminate its whole process
+    group; force-kill stragglers. Idempotent."""
     if proc is None or getattr(proc, "_rtjobs_stopped", False):
         return
     proc._rtjobs_stopped = True
     try:
         if proc.returncode is None:  # unreaped, so the group id is still ours
+            port = getattr(proc, "_rtjobs_port", None)
+            if port and not _leader_exited(proc) and _browser_close(port):
+                deadline = time.monotonic() + 5
+                while not _leader_exited(proc) and time.monotonic() < deadline:
+                    time.sleep(0.1)
             if not _leader_exited(proc):
                 _signal_group(proc, signal.SIGTERM)
                 deadline = time.monotonic() + 10
