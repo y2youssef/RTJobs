@@ -38,8 +38,25 @@ _DETAIL_TIMEOUT = 8_000
 # LinkedIn renders 25 cards per search page. The list loads top-first and
 # appends the rest while scrolled: snapshots caught 7 of 25 (positions 0-6).
 _FULL_PAGE = 25
-_SETTLE_SECONDS = 6
+# On a slow link the other 18 cards arrive in ONE jump 11-21s after the
+# scroll (Oct 9), so a still count only counts as settled while no LinkedIn
+# data request is in flight; the cap bounds short pages.
+_SETTLE_SECONDS = 25
 _STABLE_SECONDS = 1.5
+# Scrolls the card's nearest scrollable ancestor (step px, or to the bottom).
+# Structural on purpose: LinkedIn's list scroller has only obfuscated class
+# names, and the named `.scaffold-layout__list` does not scroll once CSS
+# loads (overflow visible), so scrolling it was a no-op (7 of 25 cards, Oct 9).
+_SCROLL_RESULTS_JS = """(card, step) => {
+  let el = card;
+  while ((el = el.parentElement)) {
+    const overflow = getComputedStyle(el).overflowY;
+    if ((overflow === 'auto' || overflow === 'scroll') && el.scrollHeight > el.clientHeight) break;
+  }
+  el = el || document.scrollingElement;
+  el.scrollTop = step ? el.scrollTop + step : el.scrollHeight;
+  return el.scrollTop;
+}"""
 
 _TIME_DELTAS = {
     "minute": lambda v: timedelta(minutes=v),
@@ -268,9 +285,8 @@ class LinkedInJobSpider(Spider):
                     stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
                     break
                 stage = "scrolling the results list"
-                pane = page.locator(self.sel["search"]["results_list"]).first
                 for _ in range(4):
-                    await pane.evaluate("el => el.scrollTop += 1000", timeout=remaining_ms())
+                    await self._scroll_results(page, 1000, timeout=remaining_ms())
                     await asyncio.sleep(0.8)
                 if attempt or extended:
                     logger.info("[linkedin] Search recovered after %s retry%s; continuing normal extraction.",
@@ -400,9 +416,15 @@ class LinkedInJobSpider(Spider):
                 listings[str(job_id)] = listed
         return listings
 
+    async def _scroll_results(self, page, step: int | None, timeout: int = 1000):
+        """Scroll the element that really scrolls the results list."""
+        await page.locator(self.sel["search"]["job_card"]).first.evaluate(
+            _SCROLL_RESULTS_JS, step, timeout=timeout)
+
     async def _settled_cards(self, page):
         """Card locators once the list is complete: 25 cards, or a count that
-        stopped growing for 1.5s (6s cap). Instant when all 25 are present."""
+        stopped growing for 1.5s with no LinkedIn data request in flight (25s
+        cap). Instant when all 25 are present."""
         cards = page.locator(self.sel["search"]["job_card"])
         deadline = time.monotonic() + _SETTLE_SECONDS
         last, changed_at = -1, time.monotonic()
@@ -413,11 +435,10 @@ class LinkedInJobSpider(Spider):
                 break
             if count != last:
                 last, changed_at = count, now
-            elif now - changed_at >= _STABLE_SECONDS:
+            elif now - changed_at >= _STABLE_SECONDS and not self.diagnostics.fetching("www.linkedin.com"):
                 break
             try:  # appending is driven by scrolling the results list
-                await page.locator(self.sel["search"]["results_list"]).first.evaluate(
-                    "el => el.scrollTop = el.scrollHeight", timeout=1000)
+                await self._scroll_results(page, None)
             except Exception:
                 pass
             await asyncio.sleep(0.3)

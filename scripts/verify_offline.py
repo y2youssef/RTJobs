@@ -1139,6 +1139,21 @@ def verify_browser_recovery():
         assert not checks["full_page"]["good"] and "Only 7 of 25" in checks["full_page"]["detail"]
         checks = await scan([25], ids[:24] + [None])
         assert not checks["card_ids"]["good"] and "1 of 25" in checks["card_ids"]["detail"]
+        # Slow link: the rest of the list arrives in one late jump. A still
+        # count is not "settled" while LinkedIn data requests are in flight.
+        class SlowList(GrowingList):
+            async def count(self):
+                time.sleep(0.01)
+                return await super().count()
+        late = [7] * 20 + [25]
+        waiting = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        waiting.diagnostics.pending[object()] = ("www.linkedin.com fetch", time.monotonic())
+        assert len(await waiting._settled_cards(ListPage(SlowList(late, ids)))) == 25
+        idle = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        assert len(await idle._settled_cards(ListPage(SlowList(late, ids)))) == 7
+        stream = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")  # long-lived stream: ignored
+        stream.diagnostics.pending[object()] = ("www.linkedin.com fetch", time.monotonic() - 60)
+        assert len(await stream._settled_cards(ListPage(SlowList(late, ids)))) == 7
 
         failed = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
         failed.health.check("search_fetch", True)  # earlier page worked

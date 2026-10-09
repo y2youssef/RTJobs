@@ -79,6 +79,13 @@ class BrowserDiagnostics:
         now = time.monotonic()
         return any(item == label and now - since >= min_age for item, since in self.pending.values())
 
+    def fetching(self, host: str, max_age: float = 20) -> bool:
+        """An xhr/fetch to `host` that started under `max_age` seconds ago is
+        still in flight. Older ones are long-lived streams, not page data."""
+        now = time.monotonic()
+        return any(label in (f"{host} xhr", f"{host} fetch") and now - since <= max_age
+                   for label, since in self.pending.values())
+
     def navigation_error(self, error):
         """Keep the error code even if Chromium closed the page before events."""
         code = re.search(r"\bERR_[A-Z0-9_]+\b", str(error))
