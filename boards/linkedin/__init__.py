@@ -66,7 +66,9 @@ class LinkedInBoard(JobBoard):
 
         with StealthySession(
             cdp_url=cdp,
-            disable_resources=True,
+            # No resource blocking: interception disables Chrome's HTTP cache
+            # (see LinkedInJobSpider.configure_sessions).
+            disable_resources=False,
             timeout=30_000,
             retry_delay=LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,
             page_setup=patch_no_load_wait,

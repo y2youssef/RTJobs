@@ -159,6 +159,14 @@ description, link, extra(dict), scraped_at`.
 10. `.env` must NEVER be committed (it was once — the old remote was
     replaced with a single fresh root commit; treat secrets as rotated).
     It is gitignored; untracked.
+11. **LinkedIn: never `disable_resources=True`** (or any `page.route`):
+    Playwright/Patchright sends `Network.setCacheDisabled` for every
+    intercepted page, so Chrome's HTTP cache is OFF. LinkedIn's app bundle
+    (`static.licdn.com/aero-v1/sc/h/...`, ~3 MB brotli, immutable) then
+    downloads on every run; on a slow link (Oct 9: ~60-190 KB/s) the app
+    stayed on its loading shell for hours (`Pending: static.licdn.com script`).
+    Measured A/B on the same profile: routed 24-59s / never; cached ~3s and
+    ~0.5 MB per page. Not QUIC: h3 on/off made no difference.
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`

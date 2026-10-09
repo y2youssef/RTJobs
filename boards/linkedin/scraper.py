@@ -181,7 +181,12 @@ class LinkedInJobSpider(Spider):
             "stealth",
             AsyncStealthySession(
                 cdp_url=self.cdp_url,
-                disable_resources=True,
+                # disable_resources=False: scrapling's resource blocking installs
+                # page.route(), and Playwright disables Chrome's HTTP cache on any
+                # intercepted page, so LinkedIn's ~3 MB app bundle downloaded on
+                # EVERY run; on a slow link the app never booted (Oct 9: 24-59s,
+                # cards never shown). Cached, the page needs ~0.5 MB and ~3s.
+                disable_resources=False,
                 timeout=LINKEDIN_NAVIGATION_TIMEOUT_SECONDS * 1000,
                 retries=2,
                 retry_delay=LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS,

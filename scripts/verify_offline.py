@@ -17,7 +17,7 @@ import tempfile
 import time
 from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -578,6 +578,13 @@ def verify_reposts():
         def locator(self, css): return TimedCards()
     spider = li.LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
     assert set(asyncio.run(spider._known_listings(TimedPage(), {"1", "2"}))) == {"1"}
+    # LinkedIn must never intercept requests: Playwright disables the HTTP cache
+    # on routed pages and the ~3 MB app bundle then downloads every run (Oct 9).
+    with patch.object(li, "AsyncStealthySession") as session_cls:
+        spider.configure_sessions(MagicMock())
+        assert session_cls.call_args.kwargs["disable_resources"] is False
+    for source in (ROOT / "boards/linkedin").glob("*.py"):
+        assert "disable_resources=True" not in source.read_text(), source
     raw = (ROOT / "markup/wuzzuf/wazzuf_guide.txt").read_text()
     html = raw[raw.find("<!DOCTYPE"):]
     sel, entities = load_board_selectors("wuzzuf"), wu._extract_state(html)
