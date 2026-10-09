@@ -588,6 +588,7 @@ def verify(directory):
     verify_direct_search()
     verify_cloudflare_fast_path()
     verify_clean_quit()
+    verify_naukrigulf()
 
 
 def verify_reposts():
@@ -1082,6 +1083,85 @@ def verify_clean_quit():
     free = socket.socket(); free.bind(("127.0.0.1", 0)); dead_port = free.getsockname()[1]; free.close()
     assert not browser._browser_close(dead_port, timeout=0.5) and time.monotonic() - started < 1.5
     print("PASS clean Chrome quit: Browser.close over CDP (stdlib WebSocket), falls back to signals when unreachable")
+def verify_naukrigulf():
+    """NaukriGulf: jobs from the search API response the page receives
+    (fixture: trimmed public fields of a real response, Oct 2026)."""
+    import asyncio
+    from datetime import datetime
+    import main as entry
+    from boards.base import load_board_selectors
+    from boards.naukrigulf import NaukriGulfBoard, scraper as ng
+    from core import db, telegram
+    sel = load_board_selectors("naukrigulf")
+    body = json.loads((ROOT / "markup/naukrigulf/search_sample.json").read_text())
+    base = sel["search"]["job_link_base"]
+    jobs, stats = ng._extract_jobs(body, set(), base)
+    assert len(jobs) == 5 and stats == {"entries": 5, "known": 0, "no_id": 0, "no_date": 0, "total": 47}, stats
+    first = jobs[0]
+    assert first["external_id"] == "091026501533" and first["title"] == "Reservation Agent" and first["company"] == "AccorHotel"
+    assert first["link"] == base + "reservation-agent-jobs-in-alexandria-egypt-in-accorhotel-2-to-5-years-n-cd-10050787-jid-091026501533"
+    assert first["posted_at"] == datetime.fromtimestamp(1791546800).strftime("%Y-%m-%d %H:%M")
+    assert "<" not in first["description"] and first["description"].startswith("Company Description")
+    assert "Johnson & Johnson MedTech" in jobs[1]["description"], "HTML entities decoded"
+    assert first["extra"]["location"] == "Alexandria - Egypt" and first["extra"]["experience_min"] == "2"
+    assert first["extra"]["is_consultant"] and jobs[3]["extra"]["is_easy_apply"] and jobs[3]["extra"]["job_source"] == "EMAIL"
+    assert all(job["source"] == "naukrigulf" and job["scraped_at"] for job in jobs)
+    # Known jobs are skipped; their exact listing time feeds repost detection.
+    listings = {}
+    with patch.object(db, "seen_ids_for", return_value={"091026501533", "091026501488"}):
+        fresh, stats = ng._extract_jobs(body, set(), base, lookup_seen=True, listings=listings)
+    assert len(fresh) == 3 and stats["known"] == 2 and set(listings) == {"091026501533", "091026501488"}
+    broken = json.loads(json.dumps(body))
+    del broken["jobs"][0]["jobId"]; broken["jobs"][1]["latestPostedDate"] = "soon"
+    fresh, stats = ng._extract_jobs(broken, set(), base)
+    assert stats["no_id"] == 1 and stats["no_date"] == 1 and len(fresh) == 4
+    assert ng._extract_jobs({"error": "x"}, set(), base) == ([], {"entries": None, "known": 0, "no_id": 0, "no_date": 0, "total": None})
+
+    # Live path: the page's own API response is captured and scanned.
+    class Response:
+        def __init__(self, payload, status=200, url="https://www.naukrigulf.com/spapi/jobapi/search?Limit=30&Offset=0"):
+            self.payload, self.status, self.url = payload, status, url
+        async def json(self): return self.payload
+    class Page:
+        url = "https://www.naukrigulf.com/jobs-in-egypt?freshness=1"
+        def __init__(self, html="<html><body><div id='root'></div><script>var puppeteer = false;</script></body></html>"):
+            self.html, self.handlers = html, {}
+        def on(self, event, callback): self.handlers.setdefault(event, []).append(callback)
+        async def content(self): return self.html
+    async def scan(responses=(), failure=None, html=None):
+        spider = ng.NaukriGulfJobSpider(sel, "http://127.0.0.1:1")
+        page = Page(html) if html else Page()
+        with patch.object(ng, "patch_no_load_wait", AsyncMock()):
+            await spider.setup_page(page); await spider.setup_page(page)
+        assert len(page.handlers["response"]) == 1, "listeners attach once per reused tab"
+        page.handlers["response"][0](Response(body, url="https://www.naukrigulf.com/nglogin/user/isJsLoggedIn"))
+        for response in responses:
+            page.handlers["response"][0](response)
+        if failure:
+            page.handlers["requestfailed"][0](SimpleNamespace(url=Response(None).url, failure=failure))
+        with patch.object(db, "seen_ids_for", return_value=set()), patch.object(ng, "_API_WAIT_SECONDS", 0.3):
+            await spider.scan_page(page)
+        return spider
+    spider = asyncio.run(scan([Response(body)]))
+    assert len(spider._page_jobs) == 5 and spider.health.status == "ok", spider.health.error
+    blocked = asyncio.run(scan(failure="net::ERR_HTTP2_PROTOCOL_ERROR"))
+    assert not blocked.health.checks["search_api"]["good"] and "Akamai" in blocked.health.error
+    assert "HTTP 403" in asyncio.run(scan([Response(None, status=403)])).health.error
+    flagged = asyncio.run(scan(html="<script>var puppeteer = true;</script>"))
+    assert "automation" in flagged.health.error
+    oops = asyncio.run(scan(html="<div>Oops! Something went wrong</div><script>var puppeteer = false;</script>"))
+    assert "error screen" in oops.health.error
+    assert "never arrived" in asyncio.run(scan()).health.error
+    damaged = asyncio.run(scan([Response(broken)]))
+    assert not damaged.health.checks["card_identity"]["good"] and not damaged.health.checks["posted_date"]["good"]
+    with patch.object(telegram, "notify_failure", return_value=True) as alert:
+        blocked.health.report()
+        assert alert.call_count == 1 and "naukrigulf" in alert.call_args.args[0].lower()
+    # Board wiring: registered, own CDP port, selectors present.
+    assert NaukriGulfBoard in entry.BOARDS and NaukriGulfBoard.port_offset == 3
+    offsets = [cls.port_offset for cls in entry.BOARDS]
+    assert len(offsets) == len(set(offsets)), "every board needs its own CDP port"
+    print("PASS NaukriGulf: API jobs parsed (ids, links, exact dates, text), known/repost listings, blocks diagnosed and alerted")
 
 
 def verify_cloudflare_fast_path():

@@ -34,6 +34,7 @@ services:
       - chrome_profile:/app/chromeprofile
       - wuzzuf_profile:/app/wuzzufprofile
       - indeed_profile:/app/indeedprofile
+      - naukrigulf_profile:/app/naukrigulfprofile
       - scraper_data:/data
       - ./markup:/data/markup
     # --scheduled: a cycle that overruns a tick starts the next one at once.
@@ -136,4 +137,5 @@ volumes:
   chrome_profile:
   wuzzuf_profile:
   indeed_profile:
+  naukrigulf_profile:
   scraper_data:

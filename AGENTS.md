@@ -7,7 +7,7 @@ browser sessions, persists jobs to SQLite, posts new jobs to one Telegram
 channel and failure alerts to another. Scheduled in Docker via ofelia
 (every `SCRAPE_INTERVAL_MINUTES`, default 3; ONE search page per board per run;
 boards run in PARALLEL child processes inside one cycle). Chrome runs headful under Xvfb with CDP on
-ports 9222/9223/9224 (LinkedIn/Wuzzuf/Indeed) for
+ports 9222/9223/9224/9225 (LinkedIn/Wuzzuf/Indeed/NaukriGulf) for
 live debugging / manual 2FA solves.
 
 ## Commands
@@ -42,6 +42,7 @@ boards/base.py           JobBoard run() template (RunRecord, before_browser, scr
 boards/linkedin/         login.py (state machine) + scraper.py (Spider)
 boards/wuzzuf/           scraper.py (Spider, solve_cloudflare=True)
 boards/indeed/           scraper.py (Spider, solve_cloudflare=True) — see INDEED.md
+boards/naukrigulf/       scraper.py (Spider, Akamai; jobs from the page's own search API response) — see NAUKRIGULF.md
 markup/<site>/selectors.json   ALL CSS selectors live here, never in code
 ```
 Job dict shape everywhere: `source, external_id, title, company, posted_at,
@@ -200,7 +201,8 @@ persists in the `indeed_profile` volume, re-login only on expiry with a
 30-min cooldown. See INDEED.md "Login"), `HEADLESS`,
 `DATA_DIR`, `MARKUP_DIR`, `CHROME_DEBUG_PORT=9222`,
 `CHECKPOINT_WAIT_SECONDS`, `MAX_LOGIN_RETRIES`, `WUZZUF_SEARCH_URL`,
-`*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`).
+`*_PROFILE_DIR`, `TZ` (compose: `${TZ:-Africa/Cairo}`), `NAUKRIGULF_ENABLED`
+(default false until a supervised live run), `NAUKRIGULF_SEARCH_URL`.
 
 ## Current state / how things were last verified
 - Runtime pins updated 2026-10-04: Scrapling 0.4.15, Playwright/Patchright 1.63.0.

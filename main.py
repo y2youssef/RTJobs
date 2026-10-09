@@ -23,6 +23,7 @@ import time
 from boards.linkedin import LinkedInBoard
 from boards.wuzzuf import WuzzufBoard
 from boards.indeed import IndeedBoard
+from boards.naukrigulf import NaukriGulfBoard
 from boards.base import report_run_checks
 from core import browser, db, login_state, timing
 from core.log import setup_logging
@@ -75,6 +76,7 @@ BOARDS = [
     LinkedInBoard,
     WuzzufBoard,
     IndeedBoard,
+    NaukriGulfBoard,
 ]
 
 

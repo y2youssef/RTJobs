@@ -39,8 +39,8 @@ RUN apt-get update \
 COPY --chown=scraper:scraper . .
 
 # Create volume mount points and hand them to scraper user BEFORE USER switch.
-RUN mkdir -p /app/chromeprofile /app/wuzzufprofile /app/indeedprofile /data \
-    && chown -R scraper:scraper /app/chromeprofile /app/wuzzufprofile /app/indeedprofile /data
+RUN mkdir -p /app/chromeprofile /app/wuzzufprofile /app/indeedprofile /app/naukrigulfprofile /data \
+    && chown -R scraper:scraper /app/chromeprofile /app/wuzzufprofile /app/indeedprofile /app/naukrigulfprofile /data
 
 # Chrome (crashpad) needs a real, writable HOME; useradd -r doesn't create
 # one, and without it Chrome SIGTRAPs at startup (core dump).

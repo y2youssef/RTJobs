@@ -46,7 +46,7 @@ CHROME_NO_SANDBOX = os.path.exists("/.dockerenv") if _no_sandbox == "auto" else 
 del _no_sandbox
 
 # Boards run as parallel child processes (own Chrome + CDP port each:
-# CHROME_DEBUG_PORT + 0/1/2 for LinkedIn/Wuzzuf/Indeed) inside ONE cycle, so a
+# CHROME_DEBUG_PORT + 0/1/2/3 for LinkedIn/Wuzzuf/Indeed/NaukriGulf) inside ONE cycle, so a
 # cycle lasts as long as its slowest board. false = one after another.
 BOARDS_PARALLEL = os.environ.get("BOARDS_PARALLEL", "true").lower() == "true"
 # Wall-clock cap per board run, excluding waits for a person (checkpoint /
@@ -129,6 +129,19 @@ INDEED_EMAIL = os.environ.get("INDEED_EMAIL", "")
 INDEED_CODE_WAIT_SECONDS = int(os.environ.get("INDEED_CODE_WAIT_SECONDS", "600"))
 INDEED_PROFILE_DIR = os.path.abspath(
     os.environ.get("INDEED_PROFILE_DIR", "./indeedprofile")
+)
+
+# ---------------------------------------------------------------------------
+# NaukriGulf
+# ---------------------------------------------------------------------------
+# Public (no login), Akamai Bot Manager, client-rendered: jobs come from the
+# search API response the page receives (see NAUKRIGULF.md). Disabled by
+# default until verified live.
+NAUKRIGULF_ENABLED = os.environ.get("NAUKRIGULF_ENABLED", "false").lower() == "true"
+NAUKRIGULF_SEARCH_URL = os.environ.get(
+    "NAUKRIGULF_SEARCH_URL", "https://www.naukrigulf.com/jobs-in-egypt?freshness=1&xz=1_3_5")
+NAUKRIGULF_PROFILE_DIR = os.path.abspath(
+    os.environ.get("NAUKRIGULF_PROFILE_DIR", "./naukrigulfprofile")
 )
 
 # ---------------------------------------------------------------------------

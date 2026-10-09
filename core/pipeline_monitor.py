@@ -41,7 +41,7 @@ def collect_checks(now=None, started_at=None):
             phase = json.loads(row['value']).get('phase') if row else None
             bad = enabled and (age is None or age > config.PIPELINE_WORKER_STALE_SECONDS or phase == 'stopped')
             checks['worker_' + worker] = (bool(bad and not grace), f'{worker} heartbeat is missing, stopped or older than {config.PIPELINE_WORKER_STALE_SECONDS}s.')
-        for board in ('linkedin', 'wuzzuf', 'indeed'):
+        for board in ('linkedin', 'wuzzuf', 'indeed', 'naukrigulf'):
             enabled = getattr(config, board.upper() + '_ENABLED')
             latest = conn.execute('SELECT status,started_at FROM runs WHERE source=? ORDER BY id DESC LIMIT 1', (board,)).fetchone()
             completed = conn.execute("SELECT status FROM runs WHERE source=? AND status!='running' ORDER BY id DESC LIMIT 1", (board,)).fetchone()

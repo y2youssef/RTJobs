@@ -1,0 +1,7 @@
+{
+  "search": {
+    "api_path": "/spapi/jobapi/search",
+    "job_link_base": "https://www.naukrigulf.com/",
+    "error_text": "Oops! Something went wrong"
+  }
+}

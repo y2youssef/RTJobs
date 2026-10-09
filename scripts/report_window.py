@@ -11,7 +11,7 @@ Reliability first (never miss a job): run outcomes, coverage gaps between good
 runs, and first-page saturation (a page that came back almost all new may have
 had more new jobs below it). Then latency: cycle and board durations (quiet vs
 busy runs), stage medians, and scraped->delivered per job, plus posted->delivered
-for Wuzzuf (its postedAt is exact).
+for Wuzzuf and NaukriGulf (their posting times are exact).
 """
 
 import argparse
@@ -20,7 +20,7 @@ import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
 
-PAGE = {"linkedin": 25, "wuzzuf": 15, "indeed": 15}
+PAGE = {"linkedin": 25, "wuzzuf": 15, "indeed": 15, "naukrigulf": 30}
 GOOD = ("ok", "degraded")
 
 
@@ -120,12 +120,12 @@ def report(conn, since: str, until: str):
             print(f"  {source:9s} scraped->delivered s: {_stats(_secs(j[2], j[3]) for j in mine)}")
     exact = []
     for source, posted, _, notified, _ in delivered:
-        if source != "wuzzuf" or not posted or len(posted) < 16:
+        if source not in ("wuzzuf", "naukrigulf") or not posted or len(posted) < 16:
             continue
         posted_utc = datetime.fromisoformat(posted).astimezone(timezone.utc).replace(tzinfo=None)
         exact.append((datetime.fromisoformat(notified) - posted_utc).total_seconds())
     if exact:
-        print(f"  wuzzuf posted->delivered s: {_stats(exact)}")
+        print(f"  wuzzuf+naukrigulf posted->delivered s: {_stats(exact)}")
 
     opened = conn.execute("SELECT source, check_name, COUNT(*) FROM scrape_health WHERE last_alert_at>=? AND last_alert_at<?"
                           " GROUP BY source, check_name", window).fetchall()
