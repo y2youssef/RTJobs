@@ -84,6 +84,35 @@ def _listed_at(text: str) -> str | None:
     return (datetime.now() - _TIME_DELTAS[unit](value)).strftime("%Y-%m-%d %H:%M")
 
 
+def _cards_from_api(body: dict) -> dict[str, dict]:
+    """Job id -> {"listed_at", "reposted"} from LinkedIn's job-cards API JSON.
+
+    The search list is filled from one voyager response (25 cards). Its card
+    entities carry `jobPostingUrn` and `footerItems` [{type: LISTED_DATE,
+    timeAt: epoch ms}], the posting entities LinkedIn's own `repostedJob`
+    flag. The rendered cards no longer show a listing time at all (Oct 9:
+    0 of 24 read), so this is the only per-card time. listed_at is local
+    wall time (the posted_at format). Anything unexpected is skipped.
+    """
+    cards: dict[str, dict] = {}
+    for entity in (body or {}).get("included") or []:
+        if not isinstance(entity, dict):
+            continue
+        urn = entity.get("jobPostingUrn") or ""
+        if urn.startswith("urn:li:fsd_jobPosting:"):
+            for item in entity.get("footerItems") or []:
+                if isinstance(item, dict) and item.get("type") == "LISTED_DATE" and item.get("timeAt"):
+                    try:
+                        listed = datetime.fromtimestamp(int(item["timeAt"]) / 1000).strftime("%Y-%m-%d %H:%M")
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                    cards.setdefault(urn.rsplit(":", 1)[1], {})["listed_at"] = listed
+        urn = entity.get("entityUrn") or ""
+        if urn.startswith("urn:li:fsd_jobPosting:") and "repostedJob" in entity:
+            cards.setdefault(urn.rsplit(":", 1)[1], {})["reposted"] = bool(entity["repostedJob"])
+    return cards
+
+
 def _parse_linkedin_time(time_str: str) -> str:
     if not time_str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -192,6 +221,9 @@ class LinkedInJobSpider(Spider):
         # check and retries (no health alert, the login flow owns that).
         self._needs_login: bool = False
         self._signed_in: bool = False  # the search page proved the session
+        # Job id -> {"listed_at", "reposted"} from the job-cards API response.
+        self._api_cards: dict[str, dict] = {}
+        self._api_reads: list = []
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -222,6 +254,27 @@ class LinkedInJobSpider(Spider):
         await patch_no_load_wait(page, selector_readiness=True)
         self.diagnostics.reset()
         self.diagnostics.attach(page)
+        # Tabs are reused across fetches: attach the cards listener once per page.
+        if getattr(page, "_rtjobs_cards_spider", None) is not self:
+            page._rtjobs_cards_spider = self
+            page.on("response", self._on_response)
+
+    def _on_response(self, response):
+        if self.sel["search"].get("cards_api", "voyagerJobsDashJobCards") in (response.url or ""):
+            self._api_reads.append(asyncio.ensure_future(self._read_cards(response)))
+
+    async def _read_cards(self, response):
+        try:
+            self._api_cards.update(_cards_from_api(await response.json()))
+        except Exception as exc:  # never fails the scan; DOM data still works
+            logger.debug("[linkedin] Job-cards API unreadable: %s", type(exc).__name__)
+
+    async def _api_cards_ready(self, timeout: float = 2.0) -> dict[str, dict]:
+        """The cards API data, once in-flight reads finish (bounded)."""
+        pending = [task for task in self._api_reads if not task.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
+        return self._api_cards
 
     async def on_error(self, request: Request, error: Exception):
         # Called after scrapling exhausts its three navigation attempts. This
@@ -386,7 +439,16 @@ class LinkedInJobSpider(Spider):
                               "skipped (layout change or non-job list items).")
             stored_ids = db.seen_ids_for("linkedin", (key for _, key in card_ids))
             known_ids = self.seen_ids | stored_ids
-            self.listings.update(await self._known_listings(page, stored_ids))
+            api_cards = await self._api_cards_ready()
+            listed = {key: api_cards[key]["listed_at"] for key in stored_ids
+                      if api_cards.get(key, {}).get("listed_at")}
+            if not listed:  # API not seen: fall back to card text
+                listed = await self._known_listings(page, stored_ids)
+            self.listings.update(listed)
+            flagged = sum(1 for key in stored_ids if api_cards.get(key, {}).get("reposted"))
+            logger.info("[linkedin] Listing times read for %s of %s known cards (repost detection; %s);"
+                        " LinkedIn flags %s of them as reposted.",
+                        len(listed), len(stored_ids), "cards API" if api_cards else "card text", flagged)
 
             # Every unknown card on the page, wherever it sits: promoted or
             # reposted old cards never hide newer ones (no pagination).
@@ -408,6 +470,13 @@ class LinkedInJobSpider(Spider):
                 with timing.stage("linkedin", "detail_panel", {"job_id": str(job_id)}):
                     job = await self._scrape_card(page, card, job_id)
                 if job:
+                    api_card = self._api_cards.get(str(job_id), {})
+                    if api_card.get("listed_at"):
+                        # Exact listing time instead of the panel's rounded "N hours ago".
+                        job["posted_at"] = api_card["listed_at"]
+                        job.setdefault("extra", {})["posted_at_source"] = "cards_api"
+                    if "reposted" in api_card:
+                        job.setdefault("extra", {})["linkedin_reposted"] = api_card["reposted"]
                     self._page_jobs.append(job)
                     self.seen_ids.add(str(job_id))
                     if self.on_job:

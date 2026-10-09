@@ -15,7 +15,8 @@
     "detail_panel": "#job-details",
     "login_redirect": "input#username",
     "card_company": ".artdeco-entity-lockup__subtitle",
-    "card_listed": "time"
+    "card_listed": "time",
+    "cards_api": "voyagerJobsDashJobCards"
   },
   "job_detail": {
     "panel": ".job-view-layout",

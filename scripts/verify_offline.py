@@ -1166,6 +1166,7 @@ def verify_direct_search():
 
 
 def verify_browser_recovery():
+    from datetime import datetime
     from boards.linkedin import scraper as li
     from boards.indeed import scraper as indeed
     from boards.base import load_board_selectors
@@ -1320,6 +1321,37 @@ def verify_browser_recovery():
                 patch.object(db, "seen_ids_for", return_value=set()):
             await fresh.deep_scan_page(ListPage(GrowingList([25], ids)))
         assert [job["external_id"] for job in saved] == ids
+        # Job-cards API: exact listing times (cards no longer render one) and
+        # LinkedIn's repost flag; synthetic body, no captured account data.
+        epoch = int(datetime(2026, 10, 9, 17, 5).timestamp() * 1000)
+        body = {"included": [
+            {"jobPostingUrn": f"urn:li:fsd_jobPosting:{ids[0]}",
+             "footerItems": [{"type": "LISTED_DATE", "timeAt": epoch}, {"type": "EASY_APPLY_TEXT"}]},
+            {"entityUrn": f"urn:li:fsd_jobPosting:{ids[0]}", "repostedJob": True},
+            {"jobPostingUrn": f"urn:li:fsd_jobPosting:{ids[1]}", "footerItems": [{"type": "LISTED_DATE", "timeAt": "bad"}]},
+            "not-an-entity", {"entityUrn": "urn:li:fsd_company:1"}]}
+        assert li._cards_from_api(body) == {ids[0]: {"listed_at": "2026-10-09 17:05", "reposted": True}}
+        assert li._cards_from_api({}) == {} and li._cards_from_api(None) == {}
+        api = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        class CardsResponse:
+            url = "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards?count=25"
+            async def json(self): return body
+        api._on_response(SimpleNamespace(url="https://www.linkedin.com/voyager/api/graphql"))
+        api._on_response(CardsResponse())
+        assert (await api._api_cards_ready())[ids[0]]["listed_at"] == "2026-10-09 17:05"
+        api.on_job = (api_saved := []).append
+        with patch.object(api, "_wait_for_search", AsyncMock(return_value=True)), \
+                patch.object(api, "_scrape_card", AsyncMock(side_effect=lambda page, card, job_id:
+                    {"external_id": job_id, "posted_at": "rounded", "extra": {}})), \
+                patch.object(db, "seen_ids_for", return_value=set(ids[1:])):
+            await api.deep_scan_page(ListPage(GrowingList([25], ids)))
+        assert api_saved[0]["posted_at"] == "2026-10-09 17:05" and api_saved[0]["extra"]["linkedin_reposted"] is True
+        known = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
+        known._api_cards = {key: {"listed_at": "2026-10-09 16:00"} for key in ids}
+        with patch.object(known, "_wait_for_search", AsyncMock(return_value=True)), \
+                patch.object(db, "seen_ids_for", return_value=set(ids)):
+            await known.deep_scan_page(ListPage(GrowingList([25], ids)))
+        assert len(known.listings) == 25, "known cards get their listing time from the API"
         view = (ROOT / "markup/indeed/newjob_sample.html").read_text()
         detail_spider = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
         detail_saved = []
