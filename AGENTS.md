@@ -395,6 +395,10 @@ Set dummy env before importing config in test scripts:
   SIGTERM fix, CDP hardening). Image `production-utc-speed-20261008`; DB backup
   `/data/backups/rtjobs-pre-utc-20261008-1832.db`. See docs/DEPLOYMENT.md.
 
+- 2026-10-09 16:50 Cairo: parallel boards + reposts + LinkedIn cache/scroll fixes
+  live (`962dbf0`, image `production-linkedin-scroll-20261009`); quiet cycles
+  ~25s. See docs/DEPLOYMENT.md.
+
 ## Immediate queue notifications
 - After committing a complete scrape cycle, notify `enrichment`; after committing
   validated results, notify `delivery` via `core/wakeup.py`. Notifications must

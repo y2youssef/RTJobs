@@ -187,3 +187,27 @@ starting it (see the script's docstring):
 docker compose --profile enrichment stop
 docker compose run --rm -e TZ=Africa/Cairo scraper python scripts/revert_utc_timestamps.py --yes
 ```
+
+## Parallel boards, reposts, LinkedIn cache — deployed 2026-10-09
+
+Deployed in steps on 2026-10-09 (Cairo), each with
+`docker compose --profile enrichment up -d --build`; no migration (the
+`job_reposts` table and `jobs.reposted_at` column are created on startup).
+
+| Time  | Commit    | Image tag                                   | Change |
+|-------|-----------|---------------------------------------------|--------|
+| 15:30 | `7c036e9` | `production-parallel-20261009`              | Repost detection, Telegram idle reconnect, parallel boards (CDP 9222/9223/9224), per-board time budget, one alert per failure episode |
+| 15:55 | `de3bf20` | `production-watchdog-20261009`              | Parent kills a board past budget + 60s (Playwright swallowed the in-board timeout) |
+| 16:00 | `2f5c198` | `production-indeed-back-20261009`           | Indeed: go Back from the `;jsessionid` auth 400 |
+| 16:25 | `43af5ba` | `production-linkedin-cache-20261009`        | LinkedIn without request interception (HTTP cache on) |
+| 16:34 | `32b2d26` | `production-linkedin-slow-asset-20261009`   | One same-page wait while the app bundle downloads |
+| 16:50 | `962dbf0` | `production-linkedin-scroll-20261009`       | Scroll the real list scroller; settle while data loads |
+
+Verified live after 16:50: three consecutive cycles `ok` on all boards
+(83s with 10 new LinkedIn jobs, then 25s and 25s), 25 of 25 LinkedIn cards
+per page, one classifier request per cycle, every new job delivered, no
+failing scrape-health checks. The watchdog stopped stuck Indeed (Cloudflare
+Turnstile loop) and LinkedIn (slow detail panels) runs at ~360s.
+Rollback: retag `production-card-list-20261008` as `rtjobs-scraper:latest`
+and `docker compose --profile enrichment up -d` (no schema change to undo;
+the extra table/column are ignored by older code).
