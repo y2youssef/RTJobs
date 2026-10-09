@@ -334,6 +334,72 @@ def chrome_session(
 _PATCH_INSTALLED = False
 
 
+# Second look before skipping the solver: catches a challenge that replaces
+# the page right after DOMContentLoaded.
+_CF_RECHECK_MS = 1000
+
+
+def install_cloudflare_fast_path() -> None:
+    """Run scrapling's Cloudflare solver only when the page IS a challenge.
+
+    The solver starts with wait_for_load_state("networkidle", timeout=5000)
+    before it even looks for a challenge, and Wuzzuf/Indeed pages rarely go
+    idle (trackers), so every fetch with solve_cloudflare=True paid ~4-5s
+    with no challenge present (Wuzzuf: 6-8s per run for 0.1s of parsing;
+    Indeed: every search and detail fetch). Detection is the solver's own
+    `_detect_cloudflare` on the page HTML (cType marker or embedded Turnstile
+    script), checked at once and again after _CF_RECHECK_MS; a challenge gets
+    the original solver untouched (retries pass _attempts > 0 straight
+    through). A challenge missed by both looks shows up in the board's own
+    page checks (blocked/degraded run) and is solved on the next run.
+    Idempotent.
+    """
+    from scrapling.engines._browsers._stealth import AsyncStealthySession, StealthySession
+    from scrapling.engines.toolbelt.convertor import ResponseFactory
+
+    if getattr(StealthySession, "_rtjobs_cf_fast_path", False):
+        return
+    sync_solver = StealthySession._cloudflare_solver
+    async_solver = AsyncStealthySession._cloudflare_solver
+
+    def _challenge(session, content) -> bool:
+        return content is None or session._detect_cloudflare(content) is not None
+
+    def solver(self, page, _attempts: int = 0):
+        if _attempts == 0:
+            for wait_ms in (0, _CF_RECHECK_MS):
+                if wait_ms:
+                    page.wait_for_timeout(wait_ms)
+                try:
+                    content = ResponseFactory._get_page_content(page)
+                except Exception:
+                    content = None  # unknown: let the real solver decide
+                if _challenge(self, content):
+                    break
+            else:
+                return None
+        return sync_solver(self, page, _attempts)
+
+    async def async_solver_fast(self, page, _attempts: int = 0):
+        if _attempts == 0:
+            for wait_ms in (0, _CF_RECHECK_MS):
+                if wait_ms:
+                    await page.wait_for_timeout(wait_ms)
+                try:
+                    content = await ResponseFactory._get_async_page_content(page)
+                except Exception:
+                    content = None
+                if _challenge(self, content):
+                    break
+            else:
+                return None
+        return await async_solver(self, page, _attempts)
+
+    StealthySession._cloudflare_solver = solver
+    AsyncStealthySession._cloudflare_solver = async_solver_fast
+    StealthySession._rtjobs_cf_fast_path = True
+
+
 def install_cdp_default_context_patch() -> None:
     """Make scrapling sessions connected via cdp_url reuse the browser's
     default (persistent profile) context.

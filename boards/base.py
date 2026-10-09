@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from config import (BOARD_TIME_BUDGET_SECONDS, CHROME_DEBUG_PORT, HEADLESS,
                     KILL_CHROME_ON_START, MARKUP_DIR)
 from core.board_budget import BoardTimeout, time_budget
-from core.browser import chrome_session, install_cdp_default_context_patch
+from core.browser import chrome_session, install_cdp_default_context_patch, install_cloudflare_fast_path
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,7 @@ class JobBoard(ABC):
                 record.finish(skip)
                 return 0
             install_cdp_default_context_patch()
+            install_cloudflare_fast_path()
             with chrome_session(self.profile_dir, CHROME_DEBUG_PORT + self.port_offset, headless=HEADLESS,
                                 clean_locks=KILL_CHROME_ON_START) as cdp:
                 try:

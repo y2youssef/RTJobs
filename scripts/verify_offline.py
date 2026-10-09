@@ -575,6 +575,7 @@ def verify(directory):
     verify_browser_launch()
     verify_reposts()
     verify_direct_search()
+    verify_cloudflare_fast_path()
 
 
 def verify_reposts():
@@ -1032,6 +1033,51 @@ def verify_linkedin_login():
         login_state.reset_retries()
     print("PASS LinkedIn login: late feed redirect, credential lock vs transient alerts, cookie-checked /jobs, checkpoint never wipes, one wipe per streak")
 
+
+
+def verify_cloudflare_fast_path():
+    """scrapling's solver waits up to 5s for network idle BEFORE looking for a
+    challenge; with the fast path a page without one skips it entirely."""
+    import asyncio
+    from core.browser import install_cloudflare_fast_path
+    from scrapling.engines._browsers._stealth import AsyncStealthySession, StealthySession
+    install_cloudflare_fast_path(); install_cloudflare_fast_path()  # idempotent
+    challenge = "<script>window._cf_chl_opt={cType: 'managed'}</script>"
+    clean = "<html><body>jobs</body></html>"
+    class SyncPage:
+        def __init__(self, contents): self.contents, self.calls = list(contents), []
+        def content(self): return self.contents.pop(0) if len(self.contents) > 1 else self.contents[0]
+        def wait_for_timeout(self, ms): self.calls.append(("timeout", ms))
+    class AsyncPage(SyncPage):
+        async def content(self): return SyncPage.content(self)
+        async def wait_for_timeout(self, ms): self.calls.append(("timeout", ms))
+    def fake_session(asynchronous=False):
+        if asynchronous:
+            async def idle(page, timeout=None): page.calls.append("networkidle")
+        else:
+            def idle(page, timeout=None): page.calls.append("networkidle")
+        return SimpleNamespace(_detect_cloudflare=StealthySession._detect_cloudflare, _wait_for_networkidle=idle)
+    page = SyncPage([clean])
+    assert StealthySession._cloudflare_solver(fake_session(), page) is None
+    assert page.calls == [("timeout", 1000)], "no challenge: two looks, no 5s network-idle wait"
+    page = SyncPage([challenge, clean])  # the real solver then finds it cleared
+    StealthySession._cloudflare_solver(fake_session(), page)
+    assert "networkidle" in page.calls, "a challenge goes to the real solver"
+    page = AsyncPage([clean])
+    assert asyncio.run(AsyncStealthySession._cloudflare_solver(fake_session(True), page)) is None
+    assert "networkidle" not in page.calls
+    page = AsyncPage([clean, challenge, clean])  # appears right after DOMContentLoaded
+    asyncio.run(AsyncStealthySession._cloudflare_solver(fake_session(True), page))
+    assert "networkidle" in page.calls, "the second look catches a late challenge"
+    class Broken(AsyncPage):
+        async def content(self): raise RuntimeError("target closed")
+    page = Broken([clean])
+    try:
+        asyncio.run(AsyncStealthySession._cloudflare_solver(fake_session(True), page))
+    except RuntimeError:
+        pass
+    assert "networkidle" in page.calls, "unreadable page: let the real solver decide"
+    print("PASS Cloudflare fast path: solver only for real challenges (two looks), retries untouched")
 
 
 def verify_direct_search():
