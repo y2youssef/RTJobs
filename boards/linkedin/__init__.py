@@ -59,6 +59,47 @@ class LinkedInBoard(JobBoard):
         return None
 
     def scrape(self, cdp: str, record) -> int:
+        # Straight to the search page: it proves the session by itself (URL +
+        # li_at cookie, LinkedInJobSpider._signed_out). The /login -> /feed
+        # check cost 3.3s and a heavy feed load every run; it now runs only
+        # when the search page says we are not signed in, then the search
+        # runs again.
+        health, result = self._spider(cdp)
+        if result.get("needs_login"):
+            logger.info("[linkedin] Not signed in on the search page — running the login check.")
+            if not self._login_check(cdp):
+                logger.info("[linkedin] Login check failed — skipping scrape.")
+                record.finish("login_failed")
+                return 0
+            health, result = self._spider(cdp)
+            if result.get("needs_login"):
+                result["login_redirect"] = True  # signed in a moment ago, rejected again
+        elif result.get("signed_in"):
+            login_state.reset_retries()  # what the /login check did on an active session
+
+        if result["login_redirect"]:
+            logger.info("[linkedin] Session died mid-scrape — aborting.")
+            record.finish("session_expired")
+            telegram.notify_failure(
+                "LinkedIn session expired mid-scrape",
+                "The browser was redirected to login while scraping."
+                " The next run will re-login.",
+                hint="Check http://localhost:9222 if it persists",
+            )
+            return 0
+
+        return self.finish_scrape(record, health, result["items"], result.get("listings"))
+
+    def _spider(self, cdp: str):
+        health = ScrapeHealth(self.name)
+        with timing.stage("linkedin", "scrape_spider",
+                          lambda: {"items": len(result["items"]), "status": health.status}):
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
+        return health, result
+
+    def _login_check(self, cdp: str) -> bool:
+        """Open /login (redirects to /feed when the session is active) and let
+        login.ensure_logged_in sign in or handle a checkpoint."""
         outcome: dict = {"ok": False}
 
         def page_action(page):
@@ -79,26 +120,5 @@ class LinkedInBoard(JobBoard):
                 # wait=0: scrapling's wait runs AFTER page_action, which already
                 # waits for the feed redirect — it only added 5s idle per run.
                 session.fetch(LINKEDIN_LOGIN_URL, wait=0)
+        return outcome["ok"]
 
-        if not outcome["ok"]:
-            logger.info("[linkedin] Login check failed — skipping scrape.")
-            record.finish("login_failed")
-            return 0
-
-        health = ScrapeHealth(self.name)
-        with timing.stage("linkedin", "scrape_spider",
-                          lambda: {"items": len(result["items"]), "status": health.status}):
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
-
-        if result["login_redirect"]:
-            logger.info("[linkedin] Session died mid-scrape — aborting.")
-            record.finish("session_expired")
-            telegram.notify_failure(
-                "LinkedIn session expired mid-scrape",
-                "The browser was redirected to login while scraping."
-                " The next run will re-login.",
-                hint="Check http://localhost:9222 if it persists",
-            )
-            return 0
-
-        return self.finish_scrape(record, health, result["items"], result.get("listings"))

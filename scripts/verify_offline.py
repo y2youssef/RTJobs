@@ -23,6 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+class SignedInContext:
+    """Fake browser context holding a LinkedIn session cookie (li_at)."""
+    async def cookies(self, url=None):
+        return [{"name": "li_at", "value": "offline"}]
+
+
 def isolated_markup(directory) -> str:
     """Copy markup/ (minus runtime snapshots) into the test directory.
 
@@ -339,6 +345,7 @@ def verify(directory):
     # alert helper. No browser is launched and no files/messages are produced.
     class FixturePage:
         url = "https://eg.indeed.com/jobs"
+        context = SignedInContext()
         def __init__(self, html): self.html = html
         async def wait_for_selector(self, *args, **kwargs): pass
         async def wait_for_timeout(self, *args): pass
@@ -567,6 +574,7 @@ def verify(directory):
     verify_first_page_and_schedule()
     verify_browser_launch()
     verify_reposts()
+    verify_direct_search()
 
 
 def verify_reposts():
@@ -1026,6 +1034,67 @@ def verify_linkedin_login():
 
 
 
+def verify_direct_search():
+    """LinkedIn goes straight to the search page; the /login check runs only
+    when that page is not a signed-in session (it used to run every run)."""
+    import asyncio
+    import boards.linkedin as li_board
+    from boards.linkedin import scraper as li
+    from boards.base import load_board_selectors
+
+    # Spider: the search page proves the session (URL + li_at cookie).
+    class Context:
+        def __init__(self, cookies): self._cookies = cookies
+        async def cookies(self, url):
+            if isinstance(self._cookies, Exception): raise self._cookies
+            return self._cookies
+    class SearchPage:
+        def __init__(self, url, cookies): self.url, self.context = url, Context(cookies)
+    spider = li.LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+    search = "https://www.linkedin.com/jobs/search/?sortBy=DD"
+    session = [{"name": "li_at", "value": "x"}]
+    assert not asyncio.run(spider._signed_out(SearchPage(search, session)))
+    assert asyncio.run(spider._signed_out(SearchPage(search, [{"name": "JSESSIONID", "value": "y"}]))), "guest page"
+    assert asyncio.run(spider._signed_out(SearchPage("https://www.linkedin.com/authwall?x=1", session)))
+    assert asyncio.run(spider._signed_out(SearchPage(search, RuntimeError("cdp")))), "unknown counts as signed out"
+    guest = li.LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+    asyncio.run(guest.deep_scan_page(SearchPage(search, [])))
+    assert guest._needs_login and not guest._signed_in and not guest.health.checks, "no alert: the board logs in"
+
+    # Board: login check only when needed; retries reset only on a proven session.
+    calls = []
+    def board_with(results, login_ok=True):
+        board = li_board.LinkedInBoard()
+        queue = list(results)
+        board._spider = lambda cdp: (calls.append("spider"), (SimpleNamespace(status="ok", error=""), queue.pop(0)))[1]
+        board._login_check = lambda cdp: (calls.append("login"), login_ok)[1]
+        return board
+    class Record:
+        def __init__(self): self.status = None
+        def finish(self, status, **kw): self.status = self.status or status
+    signed_in = {"items": [], "login_redirect": False, "needs_login": False, "signed_in": True, "listings": {}}
+    signed_out = {"items": [], "login_redirect": False, "needs_login": True, "signed_in": False, "listings": {}}
+    with patch.object(li_board.login_state, "reset_retries") as reset, \
+            patch.object(li_board.telegram, "notify_failure", return_value=True) as alert:
+        record = Record()
+        assert board_with([signed_in]).scrape("cdp", record) == 0
+        assert calls == ["spider"] and record.status == "ok" and reset.call_count == 1
+        calls.clear(); record = Record()
+        assert board_with([signed_out, signed_in]).scrape("cdp", record) == 0
+        assert calls == ["spider", "login", "spider"] and record.status == "ok"
+        calls.clear(); record = Record()
+        board_with([signed_out], login_ok=False).scrape("cdp", record)
+        assert calls == ["spider", "login"] and record.status == "login_failed"
+        calls.clear(); record = Record()
+        board_with([signed_out, signed_out]).scrape("cdp", record)
+        assert record.status == "session_expired" and alert.call_count == 1
+        unproven = dict(signed_in, signed_in=False)  # search never loaded: nothing to reset
+        reset.reset_mock(); calls.clear()
+        board_with([unproven]).scrape("cdp", Record())
+        assert reset.call_count == 0
+    print("PASS LinkedIn straight to search: session proven by URL + li_at; login check only when signed out")
+
+
 def verify_browser_recovery():
     from boards.linkedin import scraper as li
     from boards.indeed import scraper as indeed
@@ -1080,6 +1149,7 @@ def verify_browser_recovery():
         async def count(self): return 25
     class Page(EventPage):
         url = "https://www.linkedin.com/jobs/search/"
+        context = SignedInContext()
         def __init__(self, recovers=True):
             super().__init__()
             self.recovers = recovers; self.ready = False; self.reloads = 0
@@ -1123,7 +1193,10 @@ def verify_browser_recovery():
             if restricted == "checkpoint": page.url = "https://www.linkedin.com/checkpoint/challenge"
             else: blocked.diagnostics.access_status = 429
             await blocked.deep_scan_page(page)
-            assert page.reloads == 0 and blocked.health.status == "degraded"
+            if restricted == "checkpoint":  # the board's login check handles (and alerts) checkpoints
+                assert page.reloads == 0 and blocked._needs_login and not blocked.health.checks
+            else:
+                assert page.reloads == 0 and blocked.health.status == "degraded"
 
         detail = li.LinkedInJobSpider(sel, "http://127.0.0.1:1")
         page = Page(); page.detail_mode = True
@@ -1151,6 +1224,7 @@ def verify_browser_recovery():
             async def evaluate(self, *args, **kwargs): pass
         class ListPage:
             url = "https://www.linkedin.com/jobs/search/"
+            context = SignedInContext()
             def __init__(self, cards): self.cards = cards
             def locator(self, css): return self.cards
             async def content(self): return "<html></html>"

@@ -38,6 +38,8 @@ _DETAIL_TIMEOUT = 8_000
 # LinkedIn renders 25 cards per search page. The list loads top-first and
 # appends the rest while scrolled: snapshots caught 7 of 25 (positions 0-6).
 _FULL_PAGE = 25
+# URL paths that mean "not a signed-in session" on a search navigation.
+_SIGNED_OUT_PATHS = ("/login", "/checkpoint", "/authwall", "/security-verification", "/uas/login")
 # On a slow link the other 18 cards arrive in ONE jump 11-21s after the
 # scroll (Oct 9), so a still count only counts as settled while no LinkedIn
 # data request is in flight; the cap bounds short pages.
@@ -186,6 +188,10 @@ class LinkedInJobSpider(Spider):
         self._page_jobs: list[dict] = []
         self.listings: dict[str, str] = {}  # known job id -> current listing time
         self.on_job = None  # board.save_now: persist each job as soon as it is scraped
+        # Not signed in on the search page itself: the board runs its login
+        # check and retries (no health alert, the login flow owns that).
+        self._needs_login: bool = False
+        self._signed_in: bool = False  # the search page proved the session
         self._login_redirect: bool = False
         self._detail_failures: dict[str, str] = {}
         self.health = ScrapeHealth("linkedin")
@@ -225,13 +231,30 @@ class LinkedInJobSpider(Spider):
                           "Search navigation failed after retries. Evidence: " + self.diagnostics.summary())
 
     def _access_blocked(self, page, html: str) -> bool:
-        """Login/checkpoints and explicit access/rate limits need a later run."""
+        """Login/checkpoints and explicit access/rate limits need a later run.
+
+        A login/checkpoint page also sets _needs_login: the board then runs
+        its login check (which handles checkpoints) instead of alerting.
+        """
         path = urlsplit(page.url or "").path.lower()
-        if any(part in path for part in ("/login", "/checkpoint", "/authwall", "/security-verification")):
+        if (any(part in path for part in _SIGNED_OUT_PATHS)
+                or (html and Selector(html).css(self.sel["search"]["login_redirect"]))):
+            self._needs_login = True
             return True
-        if self.diagnostics.access_status in (401, 403, 429):
+        return self.diagnostics.access_status in (401, 403, 429)
+
+    async def _signed_out(self, page) -> bool:
+        """The search page is not a signed-in session: a login/checkpoint URL,
+        or no li_at session cookie (guests can see a public jobs page at the
+        same URL, Gotchas #5). Unknown counts as signed out: a wrong guess
+        only costs the old login check, never a scrape of a guest page."""
+        if any(part in urlsplit(page.url or "").path.lower() for part in _SIGNED_OUT_PATHS):
             return True
-        return bool(html and Selector(html).css(self.sel["search"]["login_redirect"]))
+        try:
+            cookies = await page.context.cookies("https://www.linkedin.com")
+        except Exception:
+            return True
+        return not any(c.get("name") == "li_at" and c.get("value") for c in cookies)
 
     async def _wait_for_search(self, page) -> bool:
         """Retry a stalled load once; keep terminal evidence only if it persists.
@@ -249,6 +272,8 @@ class LinkedInJobSpider(Spider):
                 initial_html = await page.content()
             except Exception:
                 initial_html = ""
+            if self._needs_login:
+                return False
             detail = "LinkedIn search requires sign-in/checkpoint handling or returned an access/rate-limit error. "
             self.health.check("search_structure", False, detail + self.diagnostics.summary(), initial_html)
             return False
@@ -311,6 +336,8 @@ class LinkedInJobSpider(Spider):
                                 self.diagnostics.summary(), LINKEDIN_SLOW_ASSET_WAIT_SECONDS)
                     continue
             attempt += 1
+        if self._needs_login:
+            return False
         detail = _search_failure_detail(html, self.sel["search"], stage, last_error)
         detail += " Evidence: " + self.diagnostics.summary()
         self.health.check("search_structure", False, detail, html)
@@ -329,6 +356,12 @@ class LinkedInJobSpider(Spider):
 
         self._page_jobs = []
         self._detail_failures = {}
+        if await self._signed_out(page):
+            self._needs_login = True
+            logger.info("[linkedin] Not signed in on the search page (%s) — the board will run its login check.",
+                        urlsplit(page.url or "").path)
+            return
+        self._signed_in = True
         self.health.check("search_fetch", True)
         # Whole search page: hydration wait, scroll, card clicks, detail panels.
         with timing.stage("linkedin", "search_page", lambda: {"new_jobs": len(self._page_jobs)}):
@@ -367,7 +400,7 @@ class LinkedInJobSpider(Spider):
             )
 
             for card, job_id in jobs_to_scrape_now:
-                if self._login_redirect:
+                if self._login_redirect or self._needs_login:
                     break  # session gone: every further card would wait out its timeouts
                 pause = random.uniform(2.0, 4.0)  # human-like pause
                 timing.record("linkedin", "human_delay", pause, {"card": str(job_id)})
@@ -642,6 +675,10 @@ def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None, on
         spider.health = health
     result = spider.start()
     items = list(result.items)
+    if spider._needs_login:
+        logger.info(f"[spider] Not signed in; {len(items)} item(s) in {result.stats.elapsed_seconds:.1f}s")
+        return {"items": items, "login_redirect": False, "needs_login": True, "signed_in": False,
+                "listings": spider.listings}
     if "search_fetch" not in spider.health.checks:
         spider.health.check("search_fetch", False,
                             "Search navigation never reached the parser. Evidence: " + spider.diagnostics.summary())
@@ -651,4 +688,5 @@ def scrape(selectors: dict, cdp_url: str, health: ScrapeHealth | None = None, on
     logger.info(
         f"[spider] {len(items)} item(s) scraped in {result.stats.elapsed_seconds:.1f}s"
     )
-    return {"items": items, "login_redirect": spider._login_redirect, "listings": spider.listings}
+    return {"items": items, "login_redirect": spider._login_redirect, "needs_login": False,
+            "signed_in": spider._signed_in, "listings": spider.listings}
