@@ -340,10 +340,10 @@ port and logins disabled — never the production profile directly.
   its jobcards blob instead of a fixed 2.5s.
 
 - pytest suite + CI: promote scripts/verify_*.py into `tests/` (offline fixtures).
-- DECISION NEEDED (user): saturation catch-up. In 7 days LinkedIn's page 1
-  came back >= 21/25 new after every gap >= 12 min (jobs below card 25 lost);
-  steady state at 3 min is median 1, p99 4, max 10. Gotchas #4 records the
-  earlier "lost for good is fine" decision; reliability is now priority no.1.
+- DECIDED (user, 2026-10-09): no page 2 / saturation catch-up. More than 25
+  new LinkedIn jobs inside one 3-minute interval is not expected (steady state:
+  median 1, p99 4, max 10 per run); Gotchas #4 stands. Reliability work goes
+  into not losing runs (immediate saves, fewer failure points) instead.
 - Reproducible image: pin the Chrome .deb version (Dockerfile downloads
   `google-chrome-stable_current`) and lock transitive Python dependencies.
 - Retention for latency_events / runs / scrape_batches / enrichment_requests.
