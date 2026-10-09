@@ -84,6 +84,10 @@ if not 1 <= LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS <= 30:
 LINKEDIN_SEARCH_RECOVERY_ATTEMPTS = int(os.environ.get("LINKEDIN_SEARCH_RECOVERY_ATTEMPTS", "1"))
 LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS", "30"))
 LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS", "20"))
+# Extra wait (once per search) while LinkedIn's app bundle is still
+# downloading: a reload restarts it, so on a slow link it never finished and
+# never reached the HTTP cache (Oct 9). Bounded by BOARD_TIME_BUDGET_SECONDS.
+LINKEDIN_SLOW_ASSET_WAIT_SECONDS = int(os.environ.get("LINKEDIN_SLOW_ASSET_WAIT_SECONDS", "90"))
 if not 0 <= LINKEDIN_SEARCH_RECOVERY_ATTEMPTS <= 2:
     raise ValueError("LINKEDIN_SEARCH_RECOVERY_ATTEMPTS must be between 0 and 2")
 if not 1 <= LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS <= 60:

@@ -72,6 +72,13 @@ class BrowserDiagnostics:
         if re.fullmatch(r"[A-Za-z]+Error", str(name)):
             self.events.append(f"Page JavaScript: {name}")
 
+    def still_loading(self, label: str, min_age: float = 10) -> bool:
+        """A request of this label (e.g. "static.licdn.com script") has been
+        in flight for at least `min_age` seconds without failing: a slow
+        download, which a reload would only restart."""
+        now = time.monotonic()
+        return any(item == label and now - since >= min_age for item, since in self.pending.values())
+
     def navigation_error(self, error):
         """Keep the error code even if Chromium closed the page before events."""
         code = re.search(r"\bERR_[A-Z0-9_]+\b", str(error))

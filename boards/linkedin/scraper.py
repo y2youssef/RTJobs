@@ -22,7 +22,7 @@ from scrapling.fetchers import AsyncStealthySession
 from scrapling.spiders import Request, Response, Spider
 
 from config import (LINKEDIN_SEARCH_URL, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS,
-                    LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS,
+                    LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS, LINKEDIN_SLOW_ASSET_WAIT_SECONDS,
                     LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS,
                     LINKEDIN_NAVIGATION_TIMEOUT_SECONDS,
                     LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS)
@@ -216,7 +216,12 @@ class LinkedInJobSpider(Spider):
         return bool(html and Selector(html).css(self.sel["search"]["login_redirect"]))
 
     async def _wait_for_search(self, page) -> bool:
-        """Retry a stalled load once; keep terminal evidence only if it persists."""
+        """Retry a stalled load once; keep terminal evidence only if it persists.
+
+        A timeout while LinkedIn's app bundle is still downloading gets ONE
+        longer wait on the same page instead of a reload (which would restart
+        the download); it does not use up a recovery attempt.
+        """
         target = page.url
         stage = "waiting for job cards"
         html = ""
@@ -229,12 +234,16 @@ class LinkedInJobSpider(Spider):
             detail = "LinkedIn search requires sign-in/checkpoint handling or returned an access/rate-limit error. "
             self.health.check("search_structure", False, detail + self.diagnostics.summary(), initial_html)
             return False
-        for attempt in range(LINKEDIN_SEARCH_RECOVERY_ATTEMPTS + 1):
-            deadline = time.monotonic() + (LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS if attempt else 30)
+        attempt, extend, extended = 0, False, False
+        while attempt <= LINKEDIN_SEARCH_RECOVERY_ATTEMPTS:
+            if extend:
+                deadline = time.monotonic() + LINKEDIN_SLOW_ASSET_WAIT_SECONDS
+            else:
+                deadline = time.monotonic() + (LINKEDIN_SEARCH_RECOVERY_TIMEOUT_SECONDS if attempt else 30)
             def remaining_ms():
                 # Playwright treats timeout=0 as unlimited, so always use >=1.
                 return max(1, int((deadline - time.monotonic()) * 1000))
-            if attempt:
+            if attempt and not extend:
                 logger.info("[linkedin] Retrying stalled search (%s/%s); previous evidence: %s",
                             attempt, LINKEDIN_SEARCH_RECOVERY_ATTEMPTS, self.diagnostics.summary())
                 self.diagnostics.reset()
@@ -247,6 +256,7 @@ class LinkedInJobSpider(Spider):
                     last_error = type(exc).__name__
                     self.diagnostics.navigation_error(exc)
                     logger.warning("[linkedin] Recovery navigation: %s", last_error)
+            extend = False
             try:
                 if self._access_blocked(page, ""):
                     stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
@@ -262,8 +272,9 @@ class LinkedInJobSpider(Spider):
                 for _ in range(4):
                     await pane.evaluate("el => el.scrollTop += 1000", timeout=remaining_ms())
                     await asyncio.sleep(0.8)
-                if attempt:
-                    logger.info("[linkedin] Search recovered after %s retry; continuing normal extraction.", attempt)
+                if attempt or extended:
+                    logger.info("[linkedin] Search recovered after %s retry%s; continuing normal extraction.",
+                                attempt, " and a slow-asset wait" if extended else "")
                 return True
             except Exception as exc:
                 last_error = type(exc).__name__
@@ -275,6 +286,14 @@ class LinkedInJobSpider(Spider):
                 if self._access_blocked(page, html):
                     stage = "checking LinkedIn access (login/checkpoint or HTTP 401/403/429); no reload attempted"
                     break
+                if (not extended and LINKEDIN_SLOW_ASSET_WAIT_SECONDS > 0
+                        and self.diagnostics.still_loading("static.licdn.com script")):
+                    extended = extend = True
+                    logger.info("[linkedin] LinkedIn scripts still downloading (%s) — waiting up to %ss"
+                                " on the same page instead of reloading.",
+                                self.diagnostics.summary(), LINKEDIN_SLOW_ASSET_WAIT_SECONDS)
+                    continue
+            attempt += 1
         detail = _search_failure_detail(html, self.sel["search"], stage, last_error)
         detail += " Evidence: " + self.diagnostics.summary()
         self.health.check("search_structure", False, detail, html)

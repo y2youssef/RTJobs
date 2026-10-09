@@ -401,6 +401,34 @@ def verify(directory):
         assert "startup/loading screen" in stalled.health.error
         assert "waiting for job cards" in stalled.health.error
         assert stalled.health.status == "degraded"
+        # A timeout while LinkedIn's app bundle is still downloading waits on
+        # the same page (a reload would restart the download, Oct 9); a stall
+        # with nothing in flight still reloads.
+        class SlowBundlePage:
+            url = "https://www.linkedin.com/jobs/search/?sortBy=DD"
+            def __init__(self, fail_waits): self.fail_waits, self.waits, self.gotos = fail_waits, [], 0
+            async def wait_for_selector(self, css, timeout):
+                self.waits.append(timeout)
+                if len(self.waits) <= self.fail_waits: raise TimeoutError("cards not yet rendered")
+            async def goto(self, *args, **kwargs): self.gotos += 1
+            async def content(self): return "<div id='app-boot-bg-loader'></div>"
+            def locator(self, css): return SimpleNamespace(first=SimpleNamespace(evaluate=AsyncMock()))
+        import boards.linkedin.scraper as li_scraper
+        with patch.object(li_scraper.asyncio, "sleep", AsyncMock()):
+            slow = LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+            slow.diagnostics.pending[object()] = ("static.licdn.com script", time.monotonic() - 25)
+            page = SlowBundlePage(fail_waits=1)
+            assert await slow._wait_for_search(page)
+            assert page.gotos == 0 and len(page.waits) == 2 and page.waits[1] > 60_000
+            plain = LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+            page = SlowBundlePage(fail_waits=1)
+            assert await plain._wait_for_search(page)
+            assert page.gotos == 1, "a stall with nothing downloading still reloads"
+            stuck = LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
+            stuck.diagnostics.pending[object()] = ("static.licdn.com script", time.monotonic() - 25)
+            page = SlowBundlePage(fail_waits=99)
+            assert not await stuck._wait_for_search(page)
+            assert len(page.waits) == 3 and page.gotos == 1, "one slow-asset wait per search, then the normal retry"
     with patch.object(telegram, "notify_failure", return_value=True) as alert, \
             patch.object(markup, "save_snapshot", return_value="test/changed.html"):
         asyncio.run(changed_markup())

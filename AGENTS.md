@@ -167,6 +167,10 @@ description, link, extra(dict), scraped_at`.
     stayed on its loading shell for hours (`Pending: static.licdn.com script`).
     Measured A/B on the same profile: routed 24-59s / never; cached ~3s and
     ~0.5 MB per page. Not QUIC: h3 on/off made no difference.
+    The cache only fills if one download FINISHES: a search timeout while a
+    `static.licdn.com script` is still in flight gets one same-page wait
+    (`LINKEDIN_SLOW_ASSET_WAIT_SECONDS`, 90) instead of a reload, which would
+    restart it (each new LinkedIn release needs one full download).
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`
