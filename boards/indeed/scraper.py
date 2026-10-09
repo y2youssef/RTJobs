@@ -115,6 +115,24 @@ def _created_at(value) -> str | None:
         return None
 
 
+async def _bounce_back(page) -> str:
+    """Async pages: go Back from Indeed's ;jsessionid auth bounce (HTTP 400 on
+    a valid session, see login.is_jsessionid_bounce). Returns the URL after."""
+    from boards.indeed.login import is_jsessionid_bounce
+
+    url = page.url
+    if not is_jsessionid_bounce(url):
+        return url
+    logger.info("[indeed] Bounced to the ;jsessionid auth page (HTTP 400) — going back.")
+    try:
+        await page.go_back(wait_until="domcontentloaded", timeout=30_000)
+        await page.wait_for_timeout(2000)
+        return page.url
+    except Exception as exc:
+        logger.info(f"[indeed] Back navigation failed: {type(exc).__name__}")
+        return url
+
+
 def _jobkey_from_url(url: str) -> str:
     m = re.search(r"[?&]jk=([^&]+)", url or "")
     return m.group(1) if m else ""
@@ -427,7 +445,7 @@ class IndeedJobSpider(Spider):
         from boards.indeed.login import is_logged_out_url
 
         try:
-            landed = page.url
+            landed = await _bounce_back(page)
         except Exception:
             landed = ""
         if is_logged_out_url(landed):
@@ -499,6 +517,10 @@ class IndeedJobSpider(Spider):
         pause = random.uniform(1.5, 3.0)  # human-like pacing
         timing.record("indeed", "human_delay", pause, {"jobkey": key[:16]})
         await asyncio.sleep(pause)
+        try:
+            await _bounce_back(page)
+        except Exception:
+            pass
 
         try:
             html = await page.content()

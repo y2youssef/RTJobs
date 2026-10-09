@@ -362,6 +362,25 @@ def verify(directory):
         with patch.object(db, "seen_ids_for", return_value={j["external_id"] for j in cards}):
             await good.scan_search_page(FixturePage(search))
         assert not good._page_jobs and all(c["good"] for c in good.health.checks.values())
+        # Indeed's ;jsessionid auth bounce (HTTP 400 on a valid session) is
+        # undone with Back, never treated as a logout (user finding, Oct 2026).
+        bounce = ("https://secure.indeed.com/auth;jsessionid=node01abc.node0?hl=en_US&service=my&co=US"
+                  "&continue=https%3A%2F%2Fwww.indeed.com%2F&from=bot-detection-anonymous")
+        class BouncedPage(FixturePage):
+            def __init__(self, html, back_to):
+                super().__init__(html); self.url, self.back_to, self.backs = bounce, back_to, 0
+            async def go_back(self, **kwargs):
+                assert kwargs.get("wait_until") == "domcontentloaded"
+                self.backs += 1; self.url = self.back_to
+        bounced = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
+        page = BouncedPage(search, "https://eg.indeed.com/jobs?q=&sort=date")
+        with patch.object(db, "seen_ids_for", return_value=set()):
+            await bounced.scan_search_page(page)
+        assert page.backs == 1 and not bounced._logged_out and bounced._page_jobs
+        stays = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
+        page = BouncedPage(search, bounce)  # Back does not help: a real logout
+        await stays.scan_search_page(page)
+        assert stays._logged_out
         # "Access Denied" inside job text is not a block page while job cards exist.
         snippet = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
         with patch.object(db, "seen_ids_for", return_value=set()):
@@ -572,6 +591,19 @@ def verify_reposts():
     jobs, seen, missing = indeed._extract_jobs(search, {j["external_id"] for j in fresh_cards}, listings=listings)
     assert not jobs and seen == len(fresh_cards) and listings
     assert all(listings[key] == next(j["posted_at"] for j in fresh_cards if j["external_id"] == key) for key in listings)
+    # Sync login check: a ;jsessionid bounce goes Back instead of starting the
+    # emailed-code login; a real auth page still counts as logged out.
+    from boards.indeed import login as indeed_login
+    class SyncBounce:
+        def __init__(self, back_to): self.url, self.back_to = "https://secure.indeed.com/auth;jsessionid=x.node0?from=bot-detection-anonymous", back_to
+        def go_back(self, **kwargs): self.url = self.back_to
+        def wait_for_timeout(self, _ms): pass
+        def title(self): return "Jobs in Egypt"
+        def content(self): return "<html></html>"
+    with patch.object(indeed_login, "_do_login", side_effect=AssertionError("must not start the code login")):
+        assert indeed_login.ensure_logged_in(SyncBounce("https://eg.indeed.com/jobs?q="), {})
+    with patch.object(indeed_login, "_cooldown_active", return_value=True):
+        assert not indeed_login.ensure_logged_in(SyncBounce("https://secure.indeed.com/auth?from=x"), {})
     print("PASS reposts: fresh listing of a known ID recorded, re-sent after the cooldown (classified first), tagged; all boards report listing times")
 
 

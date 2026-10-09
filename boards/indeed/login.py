@@ -59,6 +59,30 @@ def is_logged_out_url(url: str) -> bool:
     return bool(_LOGGED_OUT.search(url or ""))
 
 
+def is_jsessionid_bounce(url: str) -> bool:
+    """Indeed's bot check can send a VALID session to the auth servlet with a
+    cookieless `;jsessionid=` URL, which answers HTTP 400. Going Back returns
+    to the requested page with the fresh cookies (found by the user, Oct
+    2026). Not a real logout, so never start the emailed-code login for it."""
+    return ";jsessionid=" in (url or "") and is_logged_out_url(url)
+
+
+def bounce_back(page) -> str:
+    """Sync pages: go Back from a ;jsessionid bounce. Returns the URL after."""
+    url = page.url
+    if not is_jsessionid_bounce(url):
+        return url
+    logger.info("[indeed-login] Bounced to the ;jsessionid auth page (HTTP 400) — going back.")
+    try:
+        page.go_back(wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(2000)
+        _settle(page, "back from ;jsessionid bounce")
+        return page.url
+    except Exception as exc:
+        logger.info(f"[indeed-login] Back navigation failed: {type(exc).__name__}")
+        return url
+
+
 def _on_challenge(title: str, html: str) -> bool:
     return any(m in title or m in html for m in _CF_MARKERS)
 
@@ -406,7 +430,7 @@ def _do_login(page, selectors: dict) -> bool:
 def ensure_logged_in(page, selectors: dict) -> bool:
     """Entry point (used as page_action). Returns True if ready to scrape."""
     try:
-        url = page.url
+        url = bounce_back(page)
     except Exception:
         return False
 

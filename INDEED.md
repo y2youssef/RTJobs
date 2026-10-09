@@ -43,6 +43,13 @@ https://eg.indeed.com/jobs?q=&l=مصر&radius=100&sort=date&vjk=992741b34fe51afd
     cookieless `;jsessionid` URL. If a landing still carries `;jsessionid`,
     re-request the stripped URL (session cookie now set) — this flips
     400 -> 200 (verified live).
+  - A VALID session can also be bounced by the bot check (Cloudflare
+    "verify" click) to `secure.indeed.com/auth;jsessionid=...&from=bot-detection-anonymous`,
+    which answers HTTP 400. Going BACK returns to the requested page with the
+    fresh cookies (user finding, Oct 2026): `login.bounce_back` (login check)
+    and `scraper._bounce_back` (search/detail pages) do that before judging
+    the URL, so this never starts the emailed-code login or a logged_out stop.
+    Only a page that is STILL on the auth servlet after Back counts as logged out.
   - After code submit, wait until the URL LEAVES the auth page (OAuth dance
     via postauthfunnel, up to ~90s) before judging — an early check misreads
     a mid-flight redirect as a rejection.
