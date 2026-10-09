@@ -171,6 +171,16 @@ description, link, extra(dict), scraped_at`.
     `static.licdn.com script` is still in flight gets one same-page wait
     (`LINKEDIN_SLOW_ASSET_WAIT_SECONDS`, 90) instead of a reload, which would
     restart it (each new LinkedIn release needs one full download).
+12. **Stop Chrome with CDP `Browser.close`, never signals first**
+    (`core/browser.stop_chrome` -> `_browser_close`). Chrome writes cookies to
+    disk every 30s or on a clean shutdown; SIGTERM exits at once WITHOUT that
+    write. Runs end in 7-40s, so until Oct 9 only runs longer than 30s saved
+    cookies; changes made during shorter runs (session refreshes, Cloudflare /
+    Akamai clearance) were lost. A fresh NaukriGulf profile kept none of
+    Akamai's cookies after a 14s run. Verified in the image's Chrome: cookie
+    set 5s before SIGTERM lost; before Browser.close saved, exit 0.1s.
+    Signals stay the fallback (and the watchdog / second-signal paths).
+    (Container `ls` shows UTC: compare file times with `date -u`.)
 
 ## Env vars (see config.py / README for defaults)
 Required: `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TEST_ID`

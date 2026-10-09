@@ -543,6 +543,7 @@ def verify(directory):
     verify_first_page_and_schedule()
     verify_browser_launch()
     verify_reposts()
+    verify_clean_quit()
 
 
 def verify_reposts():
@@ -997,6 +998,43 @@ def verify_linkedin_login():
         login_state.reset_retries()
     print("PASS LinkedIn login: late feed redirect, credential lock vs transient alerts, cookie-checked /jobs, checkpoint never wipes, one wipe per streak")
 
+
+
+def verify_clean_quit():
+    """stop_chrome asks Chrome to quit over CDP first: SIGTERM exits without
+    writing cookies (Chrome saves them every 30s or on a clean shutdown)."""
+    import http.server
+    import socket
+    import threading
+    from core import browser
+    received = []
+    ws = socket.socket(); ws.bind(("127.0.0.1", 0)); ws.listen(1)
+    ws_port = ws.getsockname()[1]
+    def serve_ws():
+        conn, _ = ws.accept()
+        request = conn.recv(4096)
+        assert b"Upgrade: websocket" in request and b"Origin:" not in request
+        conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+        frame = conn.recv(4096)
+        length, mask = frame[1] & 0x7F, frame[2:6]
+        received.append(json.loads(bytes(b ^ mask[i % 4] for i, b in enumerate(frame[6:6 + length]))))
+        conn.close()
+    class Version(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"webSocketDebuggerUrl": f"ws://127.0.0.1:{ws_port}/devtools/browser/abc"}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args): pass
+    http_server = http.server.HTTPServer(("127.0.0.1", 0), Version)
+    threading.Thread(target=http_server.handle_request, daemon=True).start()
+    threading.Thread(target=serve_ws, daemon=True).start()
+    assert browser._browser_close(http_server.server_address[1])
+    time.sleep(0.2)
+    assert received and received[0]["method"] == "Browser.close", received
+    started = time.monotonic()
+    free = socket.socket(); free.bind(("127.0.0.1", 0)); dead_port = free.getsockname()[1]; free.close()
+    assert not browser._browser_close(dead_port, timeout=0.5) and time.monotonic() - started < 1.5
+    print("PASS clean Chrome quit: Browser.close over CDP (stdlib WebSocket), falls back to signals when unreachable")
 
 
 def verify_browser_recovery():
