@@ -450,9 +450,9 @@ class IndeedJobSpider(Spider):
         except Exception:
             landed = ""
         if is_logged_out_url(landed):
-            # Session died between the login check and the scrape (or the
-            # login check never ran): stop, don't grind turnstiles.
-            logger.info(f"[indeed] Logged out mid-scrape (landed {landed}).")
+            # Not signed in: stop here (don't grind turnstiles); the board runs
+            # its login check and then this spider again.
+            logger.info(f"[indeed] Landed logged out ({landed}).")
             self._logged_out = True
             try:
                 markup.save_snapshot("indeed", "logged_out", await page.content())

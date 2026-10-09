@@ -2,8 +2,9 @@
 
 Same Chrome/CDP model as the other boards: we launch Chrome ourselves
 (persistent profile keeps the Cloudflare clearance AND the Indeed login
-session) with an HTTP DevTools endpoint for live debugging. A sync login
-check runs first (LinkedIn pattern); only then does the async spider run.
+session) with an HTTP DevTools endpoint for live debugging. The async
+spider runs first; the sync login check runs only when its search page
+lands logged out, then the spider runs again (LinkedIn pattern).
 """
 
 import logging
@@ -27,33 +28,18 @@ class IndeedBoard(JobBoard):
     port_offset = 2
 
     def scrape(self, cdp: str, record) -> int:
-        outcome: dict = {"ok": False}
-
-        def page_action(page):
-            outcome["ok"] = login.ensure_logged_in(page, self.selectors)
-
-        with StealthySession(
-            cdp_url=cdp,
-            solve_cloudflare=True,
-            timeout=120_000,
-            page_setup=patch_no_load_wait,
-            page_action=page_action,
-        ) as session:
-            logger.info("[indeed] Opening search page (login check first)")
-            with timing.stage("indeed", "login_check"):
-                # wait=0: scrapling's wait runs AFTER the login page_action
-                # has decided; it only added 5s idle per run.
-                session.fetch(INDEED_SEARCH_URL, wait=0)
-
-        if not outcome["ok"]:
-            logger.info("[indeed] Login check failed — skipping scrape.")
-            record.finish("login_failed")
-            return 0
-
-        health = ScrapeHealth(self.name)
-        with timing.stage(self.name, "scrape_spider",
-                          lambda: {"items": len(result["items"]), "status": health.status}):
-            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
+        # Spider first: its search scan already detects a logged-out landing.
+        # The login check used to load the full search page (through the
+        # Cloudflare solver) only to judge the URL, then the spider loaded it
+        # again: ~10s per run. It now runs only when the spider lands logged out.
+        health, result = self._spider(cdp)
+        if result["logged_out"]:
+            logger.info("[indeed] Logged out on the search page — running the login check.")
+            if not self._login_check(cdp):
+                logger.info("[indeed] Login check failed — skipping scrape.")
+                record.finish("login_failed")
+                return 0
+            health, result = self._spider(cdp)
 
         if result["logged_out"]:
             logger.info("[indeed] Session died mid-scrape — aborting.")
@@ -69,3 +55,32 @@ class IndeedBoard(JobBoard):
 
         login.clear_episode_flags()
         return self.finish_scrape(record, health, result["items"], result.get("listings"))
+
+    def _spider(self, cdp: str):
+        health = ScrapeHealth(self.name)
+        with timing.stage(self.name, "scrape_spider",
+                          lambda: {"items": len(result["items"]), "status": health.status}):
+            result = scraper.scrape(self.selectors, cdp_url=cdp, health=health, on_job=self.save_now)
+        return health, result
+
+    def _login_check(self, cdp: str) -> bool:
+        """Load the search page and let login.ensure_logged_in sign in (email
+        code via Telegram) when it lands on Indeed's auth page."""
+        outcome: dict = {"ok": False}
+
+        def page_action(page):
+            outcome["ok"] = login.ensure_logged_in(page, self.selectors)
+
+        with StealthySession(
+            cdp_url=cdp,
+            solve_cloudflare=True,
+            timeout=120_000,
+            page_setup=patch_no_load_wait,
+            page_action=page_action,
+        ) as session:
+            logger.info("[indeed] Opening search page for the login check")
+            with timing.stage("indeed", "login_check"):
+                # wait=0: scrapling's wait runs AFTER the login page_action
+                # has decided; it only added 5s idle per run.
+                session.fetch(INDEED_SEARCH_URL, wait=0)
+        return outcome["ok"]

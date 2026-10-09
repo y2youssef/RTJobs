@@ -1092,7 +1092,31 @@ def verify_direct_search():
         reset.reset_mock(); calls.clear()
         board_with([unproven]).scrape("cdp", Record())
         assert reset.call_count == 0
-    print("PASS LinkedIn straight to search: session proven by URL + li_at; login check only when signed out")
+    # Indeed: one search load per run; the login check only after a logged-out landing.
+    import boards.indeed as in_board
+    def indeed_with(results, login_ok=True):
+        board = in_board.IndeedBoard()
+        queue = list(results)
+        board._spider = lambda cdp: (calls.append("spider"), (SimpleNamespace(status="ok", error=""), queue.pop(0)))[1]
+        board._login_check = lambda cdp: (calls.append("login"), login_ok)[1]
+        return board
+    fine = {"items": [], "listings": {}, "logged_out": False, "blocked": False}
+    out = dict(fine, logged_out=True)
+    with patch.object(in_board.login, "clear_episode_flags") as cleared, \
+            patch.object(in_board.login, "mark_logged_out") as expired:
+        calls.clear(); record = Record()
+        indeed_with([fine]).scrape("cdp", record)
+        assert calls == ["spider"] and record.status == "ok" and cleared.call_count == 1
+        calls.clear(); record = Record()
+        indeed_with([out, fine]).scrape("cdp", record)
+        assert calls == ["spider", "login", "spider"] and record.status == "ok"
+        calls.clear(); record = Record()
+        indeed_with([out], login_ok=False).scrape("cdp", record)
+        assert calls == ["spider", "login"] and record.status == "login_failed"
+        calls.clear(); record = Record()
+        indeed_with([out, out]).scrape("cdp", record)
+        assert record.status == "session_expired" and expired.call_count == 1
+    print("PASS LinkedIn/Indeed straight to search: session proven on the search page; login check only when signed out")
 
 
 def verify_browser_recovery():
