@@ -28,6 +28,10 @@ https://eg.indeed.com/jobs?q=&l=مصر&radius=100&sort=date&vjk=992741b34fe51afd
   -> type the emailed 6-digit code -> verify via homepage
   (`"isLoggedIn":true` / logout link). One-time per session; cookies persist
   in the `indeed_profile` volume like LinkedIn.
+- When it runs: the spider loads the search page first; the login check
+  (`IndeedBoard._login_check`, the same search URL + `ensure_logged_in`) runs
+  only after the spider landed logged out, then the spider runs again. A
+  logged-in run loads the search page once (it used to load it twice).
 - Code round-trip: the run prompts the failure channel (ForceReply, falls
   back to plain text in channels) and long-polls Bot `getUpdates`
   (`timeout=30`, `allowed_updates=[message, channel_post]`) up to

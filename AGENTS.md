@@ -108,7 +108,13 @@ description, link, extra(dict), scraped_at`.
    later") only cool down. Checkpoints and alerts never wipe the profile;
    other failures get at most one wipe per streak (core/login_state.py).
    `/jobs` counts as logged in only with the `li_at` session cookie.
-   Fetch `https://www.linkedin.com/login`, fill with
+   Runs go STRAIGHT to the search page (perf branch, Oct 2026): it proves the
+   session itself (`LinkedInJobSpider._signed_out`: no login/authwall/checkpoint
+   path AND the li_at cookie; unknown = signed out). Only then does the board
+   run the /login check below and search again; retries reset only when the
+   search page proved the session. A checkpoint on the search page goes to
+   that login check (which alerts + waits), not a scrape-health alert.
+   The login check: fetch `https://www.linkedin.com/login`, fill with
    human-like typing (EN+AR aware), then `_verify_routing` waits
    event-based via `page.wait_for_url` for `(feed|/jobs|checkpoint|security_verification)`
    — do NOT put `login` in that pattern (current URL matches it instantly).
@@ -264,8 +270,10 @@ Set dummy env before importing config in test scripts:
   `load_board_selectors(site)`; missing file = fail loudly at startup.
 - Reposts (core/db.record_listings): employers refresh old listings and they keep
   their board job ID, so ID dedupe alone hides them. Boards report the current
-  listing time of KNOWN cards (LinkedIn card "N minutes/hours ago", Wuzzuf SSR
-  postedAt, Indeed createDate). >= REPOST_MIN_GAP_HOURS (24) newer than stored
+  listing time of KNOWN cards (LinkedIn: the job-cards API response
+  `voyagerJobsDashJobCards` footerItems LISTED_DATE timeAt — the rendered cards
+  show no time since Oct 2026, card text read 0 of 24; Wuzzuf SSR postedAt,
+  Indeed createDate). >= REPOST_MIN_GAP_HOURS (24) newer than stored
   = repost, always recorded in `job_reposts`; re-sent with a 🔁 tag only when
   the last delivery is > REPOST_REDELIVER_AFTER_DAYS (7) old (classified in the
   cycle first if it has no current result). Latency reports exclude reposts.
@@ -310,10 +318,32 @@ Set dummy env before importing config in test scripts:
 - Telegram's shared session drops pooled sockets after 60s idle: Telegram closes
   idle keep-alives, and reuse failed the first send after every quiet spell.
 
-## Backlog (open items; history in docs/archive/IMPROVEMENTS-2026-08-to-10.md)
+## Cycle latency branch `perf/cycle-latency` (2026-10-09)
+Reliability is priority no.1 (never miss a job), latency no.2. Measured against
+the main baseline with `scripts/report_window.py --since/--until` (same metrics
+for any window); staging runs use a COPY of a profile + DB, Telegram on a dead
+port and logins disabled — never the production profile directly.
+- Every finished job is saved at once (`JobBoard.save_now`, spiders' `on_job`):
+  a run stopped by budget/signal/crash keeps its work; finish_scrape counts
+  once; killed runs report what they saved. Safe for whole-cycle
+  classification (enrichment waits for the batch to finish).
+- LinkedIn and Indeed skip their separate login check: the spider's search
+  page proves the session; the login check runs only after a signed-out
+  landing, then the spider again (LinkedIn -3.3s, Indeed ~-10s per run).
+- `install_cloudflare_fast_path()`: scrapling's solver waited up to 5s for
+  networkidle BEFORE looking for a challenge on every solve_cloudflare fetch;
+  now two looks (0s, 1s) with the solver's own detector, the real solver only
+  for a challenge or unreadable page.
+- LinkedIn: one scroll starts the list load (was a fixed 3.2s loop); listing
+  times + LinkedIn's repostedJob flag + exact new-job posted_at come from the
+  job-cards API (`search.cards_api` marker, code default). Indeed polls for
+  its jobcards blob instead of a fixed 2.5s.
+
 - pytest suite + CI: promote scripts/verify_*.py into `tests/` (offline fixtures).
-- Indeed search page: replace the fixed `wait_for_timeout(2500)` with a poll for
-  the mosaic jobcards blob (~2.5s off every cycle; pacing unchanged).
+- DECISION NEEDED (user): saturation catch-up. In 7 days LinkedIn's page 1
+  came back >= 21/25 new after every gap >= 12 min (jobs below card 25 lost);
+  steady state at 3 min is median 1, p99 4, max 10. Gotchas #4 records the
+  earlier "lost for good is fine" decision; reliability is now priority no.1.
 - Reproducible image: pin the Chrome .deb version (Dockerfile downloads
   `google-chrome-stable_current`) and lock transitive Python dependencies.
 - Retention for latency_events / runs / scrape_batches / enrichment_requests.
