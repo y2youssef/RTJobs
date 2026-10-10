@@ -93,7 +93,9 @@ class ScrapeHealth:
             self.check("search_fetch", False, "The spider completed without parsing a search response.")
         with db.get_db() as conn:
             previous = {r["check_name"]: dict(r) for r in conn.execute(
-                "SELECT * FROM scrape_health WHERE source=?", (self.source,))}
+                "SELECT h.*, e.fail_streak, e.recent_failures, e.pending_note FROM scrape_health h"
+                " LEFT JOIN scrape_health_episodes e USING (source, check_name) WHERE h.source=?",
+                (self.source,))}
         now = db.now_str()
         rows, due = {}, []
         for name, check in self.checks.items():
@@ -145,20 +147,23 @@ class ScrapeHealth:
                     row["pending_note"] = None
                 conn.execute(
                     "INSERT INTO scrape_health (source, check_name, failing, detail, snapshot, first_seen_at,"
-                    " last_seen_at, last_alert_at, fail_streak, recent_failures, pending_note)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source, check_name) DO UPDATE SET"
-                    " failing=excluded.failing, detail=excluded.detail, snapshot=excluded.snapshot,"
+                    " last_seen_at, last_alert_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source, check_name)"
+                    " DO UPDATE SET failing=excluded.failing, detail=excluded.detail, snapshot=excluded.snapshot,"
                     " first_seen_at=excluded.first_seen_at, last_seen_at=excluded.last_seen_at,"
-                    " last_alert_at=excluded.last_alert_at, fail_streak=excluded.fail_streak,"
-                    " recent_failures=excluded.recent_failures, pending_note=excluded.pending_note",
+                    " last_alert_at=excluded.last_alert_at",
                     (self.source, name, row["failing"], row["detail"], row["snapshot"], row["first_seen_at"],
-                     row["last_seen_at"], row["last_alert_at"], row["fail_streak"], row["recent_failures"],
-                     row["pending_note"]))
+                     row["last_seen_at"], row["last_alert_at"]))
+                conn.execute(
+                    "INSERT INTO scrape_health_episodes (source, check_name, fail_streak, recent_failures,"
+                    " pending_note) VALUES (?,?,?,?,?) ON CONFLICT(source, check_name) DO UPDATE SET"
+                    " fail_streak=excluded.fail_streak, recent_failures=excluded.recent_failures,"
+                    " pending_note=excluded.pending_note",
+                    (self.source, name, row["fail_streak"], row["recent_failures"], row["pending_note"]))
             if notes_sent:
                 for name in notes:
                     if name not in rows:
-                        conn.execute("UPDATE scrape_health SET pending_note=NULL WHERE source=? AND check_name=?",
-                                     (self.source, name))
+                        conn.execute("UPDATE scrape_health_episodes SET pending_note=NULL"
+                                     " WHERE source=? AND check_name=?", (self.source, name))
         for name, check in self.checks.items():
             if check["good"] and previous.get(name, {}).get("failing"):
                 logger.info("[%s] Scrape check recovered: %s", self.source, name)

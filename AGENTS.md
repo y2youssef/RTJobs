@@ -375,7 +375,12 @@ port and logins disabled — never the production profile directly.
   hour; single blips that recover stay silent. A confirmed episode that
   recovers before any alert got through sends one "failed and recovered"
   note (`pending_note`, retried until delivered). Recovered rows clear
-  `last_alert_at`, so past alerts are not queryable there.
+  `last_alert_at`, so past alerts are not queryable there. The rule's state
+  (streak, recent failures, note) is in `scrape_health_episodes`, NOT new
+  `scrape_health` columns: older images INSERT into scrape_health positionally.
+- Schema changes must keep the rollback image working: add tables, or add
+  columns only to tables whose every writer (in the PREVIOUS image too) names
+  its columns. Removing or renaming a column needs two deploys.
 - `--preview` in the enrichment worker makes a REAL paid call; its spend is
   correctly booked against the daily budget (not a bug).
 - Tests that check "process group gone" via `os.killpg(pid, 0)` need an init

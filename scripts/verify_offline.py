@@ -361,15 +361,21 @@ def verify(directory):
         seen("outage", True)
         assert alert.call_count == calls + 2, "the alert was tried, then the recovery note"
         with db.get_db() as conn:
-            assert conn.execute("SELECT pending_note FROM scrape_health WHERE source='outage' AND check_name='structure'").fetchone()[0]
+            assert conn.execute("SELECT pending_note FROM scrape_health_episodes WHERE source='outage' AND check_name='structure'").fetchone()[0]
         alert.return_value = True
         quiet = ScrapeHealth("outage"); quiet.check("search_fetch", True); quiet.report()  # check not observed
         assert "failed and recovered" in alert.call_args.args[0] and "structure: failing from" in alert.call_args.args[1]
         with db.get_db() as conn:
-            assert not conn.execute("SELECT pending_note FROM scrape_health WHERE source='outage' AND check_name='structure'").fetchone()[0]
+            assert not conn.execute("SELECT pending_note FROM scrape_health_episodes WHERE source='outage' AND check_name='structure'").fetchone()[0]
         calls = alert.call_count
         seen("outage", True)
         assert alert.call_count == calls, "the note is sent once"
+        # Rollback safety: images before Oct 10 insert into scrape_health
+        # positionally (8 values); the schema must keep accepting that.
+        with db.get_db() as conn:
+            conn.execute("INSERT INTO scrape_health VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source,check_name) "
+                         "DO UPDATE SET failing=excluded.failing",
+                         ("outage", "structure", 1, "old image", None, db.now_str(), db.now_str(), None))
     print("PASS parser-health detection, persistent dedupe, recovery and failed-alert retry")
 
     # Exercise actual browser callbacks against changed markup, not just the
