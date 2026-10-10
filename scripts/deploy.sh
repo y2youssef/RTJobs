@@ -51,13 +51,13 @@ docker build -q -t "$candidate" . >/dev/null
 # --- 3. Gate ----------------------------------------------------------------
 log "Gate: offline suite inside the candidate (network off)"
 gate_log=$(mktemp /tmp/rtjobs-gate-XXXXXX.log)
-if ! docker run --rm --network none --entrypoint python "$candidate" scripts/verify_offline.py >"$gate_log" 2>&1; then
+if ! docker run --rm --init --network none --entrypoint python "$candidate" scripts/verify_offline.py >"$gate_log" 2>&1; then
     tail -n 25 "$gate_log"
     die "offline suite failed (full log: $gate_log); production untouched"
 fi
 grep -q "All offline checks passed." "$gate_log" || die "offline suite did not report success ($gate_log)"
 log "Gate: $(grep -c '^PASS' "$gate_log") checks passed"
-docker run --rm --network none -e PYTHON_DOTENV_DISABLED=1 -e TELEGRAM_TOKEN=gate -e TELEGRAM_CHAT_ID=1 \
+docker run --rm --init --network none -e PYTHON_DOTENV_DISABLED=1 -e TELEGRAM_TOKEN=gate -e TELEGRAM_CHAT_ID=1 \
     -e TELEGRAM_TEST_ID=2 -e DATA_DIR=/tmp --entrypoint python "$candidate" \
     -c "from core.browser import verify_scrapling_contract as check; check()" \
     || die "scrapling contract check failed in the candidate; production untouched"

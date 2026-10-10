@@ -16,7 +16,10 @@ source .venv/bin/activate.fish      # shell is fish; venv is Python 3.14
 python main.py                      # run all enabled boards
 python main.py --reset-login        # clear LinkedIn retry/cooldown state
 python -m py_compile <files...>     # no linter/typechecker configured — compile check + offline tests are the verification loop
-docker compose --profile enrichment up -d --build  # ALL services (plain `up --build` skips the workers)
+scripts/deploy.sh                   # THE way to deploy main: gate in the candidate image, quiet-moment switch, auto-rollback
+scripts/deploy.sh --dry-run         # build + gate only (any branch); production untouched
+scripts/build_chrome_base.sh        # (re)build the pinned Chrome base image; --upgrade fetches a new Chrome on purpose
+docker compose --profile enrichment up -d  # recreate after a .env change (deploy.sh does builds)
 docker compose logs -f scraper
 ```
 There is NO test framework. Verification = ad-hoc offline scripts that run
@@ -330,7 +333,7 @@ Set dummy env before importing config in test scripts:
 - Telegram's shared session drops pooled sockets after 60s idle: Telegram closes
   idle keep-alives, and reuse failed the first send after every quiet spell.
 
-## Cycle latency branch `perf/cycle-latency` (2026-10-09)
+## Cycle latency work (2026-10-09, deployed 22:54)
 Reliability is priority no.1 (never miss a job), latency no.2. Measured against
 the main baseline with `scripts/report_window.py --since/--until` (same metrics
 for any window); staging runs use a COPY of a profile + DB, Telegram on a dead
@@ -351,13 +354,39 @@ port and logins disabled — never the production profile directly.
   job-cards API (`search.cards_api` marker, code default). Indeed polls for
   its jobcards blob instead of a fixed 2.5s.
 
-- pytest suite + CI: promote scripts/verify_*.py into `tests/` (offline fixtures).
+## Deploy gate, pinning, alert rules (2026-10-10)
+- Deploy only with `scripts/deploy.sh` (clean main == origin/main). It builds
+  `rtjobs-scraper:candidate-<sha>`, runs the full offline suite + the scrapling
+  contract check + a Chrome version check INSIDE the candidate (`--init`,
+  networking off), switches only when no cycle runs and the next tick is >=20s
+  away, then watches 2 cycles and rolls back (`rollback-<stamp>` tag) if a
+  board is never ok, a run hits the contract/config error, a worker is down or
+  cycles stall. User decision 2026-10-10: this gate instead of CI for now.
+- Reproducible image: Chrome comes from the local base `rtjobs-chrome-base:<version>`
+  (docker/chrome-base.Dockerfile, Python pinned by digest; Dockerfile
+  `ARG CHROME_BASE`), Python packages from `requirements.lock` (pip freeze of the
+  production image, used as constraints). Google only serves the current
+  Chrome: a fresh machine must build the base, and gets today's Chrome.
+- `core.browser.verify_scrapling_contract()` runs before our patches install:
+  scrapling must be `SCRAPLING_VERSION` and every replaced/called internal
+  must exist. Upgrading scrapling = re-verify the patches, bump the constant.
+- Alerts (core/scrape_health.py): an episode alerts when a check fails
+  `CONFIRM_STREAK` (2) times in a row or `FLAP_FAILURES` (3) times within an
+  hour; single blips that recover stay silent. A confirmed episode that
+  recovers before any alert got through sends one "failed and recovered"
+  note (`pending_note`, retried until delivered). Recovered rows clear
+  `last_alert_at`, so past alerts are not queryable there.
+- `--preview` in the enrichment worker makes a REAL paid call; its spend is
+  correctly booked against the daily budget (not a bug).
+- Tests that check "process group gone" via `os.killpg(pid, 0)` need an init
+  process to reap zombies: run the suite in a container with `--init`.
+
+## Backlog (open items; history in docs/archive/IMPROVEMENTS-2026-08-to-10.md)
+- pytest suite (+ CI later if more agents/people push): promote scripts/verify_*.py into `tests/`.
 - DECIDED (user, 2026-10-09): no page 2 / saturation catch-up. More than 25
   new LinkedIn jobs inside one 3-minute interval is not expected (steady state:
   median 1, p99 4, max 10 per run); Gotchas #4 stands. Reliability work goes
   into not losing runs (immediate saves, fewer failure points) instead.
-- Reproducible image: pin the Chrome .deb version (Dockerfile downloads
-  `google-chrome-stable_current`) and lock transitive Python dependencies.
 - Retention for latency_events / runs / scrape_batches / enrichment_requests.
 - Host Chrome (154) vs container Chrome (151): the hosted DevTools frontend can
   mismatch; use the URL printed by scripts/inspect_chrome.py.
