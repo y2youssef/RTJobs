@@ -166,6 +166,8 @@ def verify(directory):
     fake_spider.health.check("search_fetch", True)
     with patch.object(indeed, "IndeedJobSpider", return_value=fake_spider), patch.object(telegram, "notify_failure", return_value=True) as alert:
         recovered = indeed.scrape({}, "unused")["items"]
+        assert alert.call_count == 0, "one failed observation is not yet an episode"
+        indeed.scrape({}, "unused")
         assert alert.call_count == 1 and "detail_fetch" in alert.call_args.args[1]
     assert len(recovered) == 1 and recovered[0]["extra"]["detail_status"] == "fetch_failed"
     print("PASS Indeed old/current layouts, salary/types, snippet flags, failed-detail recovery")
@@ -318,6 +320,8 @@ def verify(directory):
         broken = observation(False)
         broken.check("structure", True)  # a later good page cannot erase a failure
         broken.report()
+        assert alert.call_count == 0, "one failed observation is not yet an episode"
+        observation(False).report()
         assert alert.call_count == 1 and alert.call_args.args[2] == "test/snapshot.html"
         observation(False).report()
         assert alert.call_count == 1
@@ -337,8 +341,35 @@ def verify(directory):
         observation(False).report()
         assert alert.call_count == 4  # failed delivery was retried
         no_callback = ScrapeHealth("no-callback")
-        no_callback.report()
+        no_callback.report(); no_callback.report()
         assert "search_fetch" in alert.call_args.args[1]
+        # A one-off failure that recovers stays silent; a flapping check
+        # (3 failures within the hour) alerts even without two in a row.
+        calls = alert.call_count
+        def seen(source, good):
+            health = ScrapeHealth(source); health.check("search_fetch", True)
+            health.check("structure", good, "list missing"); health.report()
+        seen("blip", False); seen("blip", True)
+        assert alert.call_count == calls
+        seen("blip", False); seen("blip", True); seen("blip", False)
+        assert alert.call_count == calls + 1 and "structure" in alert.call_args.args[1]
+        # A confirmed episode whose alert never got through (Telegram down in
+        # the same outage, Oct 9) is reported on recovery, retried until sent.
+        calls = alert.call_count
+        alert.return_value = False
+        seen("outage", False); seen("outage", False)
+        seen("outage", True)
+        assert alert.call_count == calls + 2, "the alert was tried, then the recovery note"
+        with db.get_db() as conn:
+            assert conn.execute("SELECT pending_note FROM scrape_health WHERE source='outage' AND check_name='structure'").fetchone()[0]
+        alert.return_value = True
+        quiet = ScrapeHealth("outage"); quiet.check("search_fetch", True); quiet.report()  # check not observed
+        assert "failed and recovered" in alert.call_args.args[0] and "structure: failing from" in alert.call_args.args[1]
+        with db.get_db() as conn:
+            assert not conn.execute("SELECT pending_note FROM scrape_health WHERE source='outage' AND check_name='structure'").fetchone()[0]
+        calls = alert.call_count
+        seen("outage", True)
+        assert alert.call_count == calls, "the note is sent once"
     print("PASS parser-health detection, persistent dedupe, recovery and failed-alert retry")
 
     # Exercise actual browser callbacks against changed markup, not just the
@@ -359,11 +390,13 @@ def verify(directory):
         assert damaged != raw
         await w_spider.scan_page(FixturePage(damaged))
         assert not w_spider.health.checks["ssr_collection"]["good"]
-        w_spider.health.report()
+        for _ in range(2):  # two runs see the same broken page: an episode
+            w_spider.health.report()
         i_spider = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
         await i_spider.scan_search_page(FixturePage(search.replace('"jobkey"', '"changedJobKey"')))
         assert not i_spider.health.checks["card_identity"]["good"]
-        i_spider.health.report()
+        for _ in range(2):
+            i_spider.health.report()
         # A valid, all-seen Indeed page produces no new jobs and no alarm.
         good = indeed.IndeedJobSpider({}, "http://127.0.0.1:1")
         with patch.object(db, "seen_ids_for", return_value={j["external_id"] for j in cards}):
@@ -413,7 +446,8 @@ def verify(directory):
         linked = LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
         await linked.deep_scan_page(MissingCardsPage("<main>new layout</main>"))
         assert not linked.health.checks["search_structure"]["good"]
-        linked.health.report()
+        for _ in range(2):
+            linked.health.report()
         stalled = LinkedInJobSpider(load_board_selectors("linkedin"), "http://127.0.0.1:1")
         await stalled.deep_scan_page(MissingCardsPage((ROOT / "markup/linkedin/loading_shell_sample.html").read_text()))
         assert "startup/loading screen" in stalled.health.error
@@ -488,7 +522,9 @@ def verify(directory):
     with patch.object(board_base, "chrome_session", side_effect=lambda *a, **kw: nullcontext("cdp")), \
             patch.object(tg, "notify_failure", return_value=True) as alert:
         assert Probe(RuntimeError("boom")).run() == 0
-        assert last_run() == ("error", "boom") and "Probe board failed: boom" in alert.call_args.args[1]
+        assert last_run() == ("error", "boom") and alert.call_count == 0, "a single crash is not yet an episode"
+        assert Probe(RuntimeError("boom again")).run() == 0
+        assert alert.call_count == 1 and "Probe board failed: boom again" in alert.call_args.args[1]
         assert Probe(RuntimeError("boom again")).run() == 0
         assert alert.call_count == 1, "a board failing every run must alert once per episode"
         try:
@@ -522,7 +558,8 @@ def verify(directory):
             patch.object(tg, "notify_failure", return_value=True) as alert:
         started = time.monotonic()
         assert Slow(None).run() == 0 and time.monotonic() - started < 1.8
-        assert last_run()[0] == "timeout" and "time budget" in alert.call_args.args[1]
+        assert last_run()[0] == "timeout" and alert.call_count == 0
+        assert Slow(None).run() == 0 and alert.call_count == 1 and "time budget" in alert.call_args.args[1]
         assert Slow(None).run() == 0 and alert.call_count == 1
         assert Patient(None).run() == 0 and last_run()[0] == "ok"
         # Jobs are saved the moment they are scraped: a run stopped by its
@@ -588,6 +625,7 @@ def verify(directory):
     verify_direct_search()
     verify_cloudflare_fast_path()
     verify_clean_quit()
+    verify_scrapling_contract_check()
     verify_naukrigulf()
 
 
@@ -1048,6 +1086,27 @@ def verify_linkedin_login():
 
 
 
+def verify_scrapling_contract_check():
+    """Our patches target one scrapling release; any other fails loudly."""
+    import importlib.metadata
+    from core import browser
+    from scrapling.engines._browsers._stealth import StealthySession
+    browser.verify_scrapling_contract()
+    with patch.object(importlib.metadata, "version", return_value="0.5.0"):
+        try:
+            browser.verify_scrapling_contract()
+            raise AssertionError("a different scrapling release must be refused")
+        except RuntimeError as exc:
+            assert "scrapling 0.5.0 is installed" in str(exc)
+    with patch.object(StealthySession, "_initialize_context", None):
+        try:
+            browser.verify_scrapling_contract()
+            raise AssertionError("a missing internal must be refused")
+        except RuntimeError as exc:
+            assert "StealthySession._initialize_context is missing" in str(exc)
+    print("PASS scrapling contract: version and every patched/called internal checked")
+
+
 def verify_clean_quit():
     """stop_chrome asks Chrome to quit over CDP first: SIGTERM exits without
     writing cookies (Chrome saves them every 30s or on a clean shutdown)."""
@@ -1155,7 +1214,7 @@ def verify_naukrigulf():
     damaged = asyncio.run(scan([Response(broken)]))
     assert not damaged.health.checks["card_identity"]["good"] and not damaged.health.checks["posted_date"]["good"]
     with patch.object(telegram, "notify_failure", return_value=True) as alert:
-        blocked.health.report()
+        blocked.health.report(); blocked.health.report()
         assert alert.call_count == 1 and "naukrigulf" in alert.call_args.args[0].lower()
     # Board wiring: registered, own CDP port, selectors present.
     assert NaukriGulfBoard in entry.BOARDS and NaukriGulfBoard.port_offset == 3

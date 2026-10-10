@@ -382,6 +382,58 @@ def chrome_session(
 _PATCH_INSTALLED = False
 
 
+# The scrapling release every patch below was written and verified against.
+SCRAPLING_VERSION = "0.4.15"
+
+
+def verify_scrapling_contract() -> None:
+    """Raise unless scrapling is the release our patches target and every
+    internal they replace or call still exists in the shape we use.
+
+    install_cdp_default_context_patch() and install_cloudflare_fast_path()
+    replace StealthySession/AsyncStealthySession.start and _cloudflare_solver
+    and call _initialize_context, _detect_cloudflare, ResponseFactory's page
+    readers and the config's cdp_url/proxy_rotator. requirements.lock pins the
+    version; this check makes any other release (a rebuild without the lock, a
+    deliberate upgrade) fail loudly at the first board run instead of looking
+    like a site change. The deploy gate runs it inside the candidate image.
+    """
+    import importlib.metadata
+    from scrapling.engines._browsers._stealth import AsyncStealthySession, StealthySession
+    from scrapling.engines._browsers._validators import StealthConfig
+    from scrapling.engines.toolbelt.convertor import ResponseFactory
+
+    problems = []
+    version = importlib.metadata.version("scrapling")
+    if version != SCRAPLING_VERSION:
+        problems.append(f"scrapling {version} is installed; the patches were written for {SCRAPLING_VERSION}")
+    # (name, minimum positional parameters we pass, including self)
+    wanted = (("start", 1), ("_cloudflare_solver", 3), ("_initialize_context", 3),
+              ("_detect_cloudflare", 1), ("_wait_for_networkidle", 2))
+    for cls in (StealthySession, AsyncStealthySession):
+        for name, arity in wanted:
+            func = getattr(cls, name, None)
+            if not callable(func):
+                problems.append(f"{cls.__name__}.{name} is missing")
+                continue
+            try:
+                params = inspect.signature(func).parameters
+            except (TypeError, ValueError):
+                continue
+            if len(params) < arity:
+                problems.append(f"{cls.__name__}.{name} takes {len(params)} parameters, we pass {arity}")
+    for name in ("_get_page_content", "_get_async_page_content"):
+        if not callable(getattr(ResponseFactory, name, None)):
+            problems.append(f"ResponseFactory.{name} is missing")
+    fields = set(getattr(StealthConfig, "__struct_fields__", ()))
+    for name in ("cdp_url", "proxy_rotator"):
+        if name not in fields:
+            problems.append(f"StealthConfig.{name} is missing")
+    if problems:
+        raise RuntimeError("scrapling contract changed: " + "; ".join(problems)
+                           + ". Re-verify core/browser.py's patches before deploying.")
+
+
 # Second look before skipping the solver: catches a challenge that replaces
 # the page right after DOMContentLoaded.
 _CF_RECHECK_MS = 1000
@@ -407,6 +459,7 @@ def install_cloudflare_fast_path() -> None:
 
     if getattr(StealthySession, "_rtjobs_cf_fast_path", False):
         return
+    verify_scrapling_contract()
     sync_solver = StealthySession._cloudflare_solver
     async_solver = AsyncStealthySession._cloudflare_solver
 
@@ -464,6 +517,7 @@ def install_cdp_default_context_patch() -> None:
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
+    verify_scrapling_contract()
 
     from playwright.async_api import async_playwright
     from playwright.sync_api import sync_playwright

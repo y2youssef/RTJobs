@@ -1,16 +1,10 @@
-FROM python:3.13-slim
-
-# ---------------------------------------------------------------------------
-# Google Chrome stable (real_chrome=True requires the real binary) + Xvfb
-# (virtual display so headful Chrome can run without a screen server).
-# ---------------------------------------------------------------------------
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget xvfb \
-    && wget -q -O /tmp/chrome.deb \
-        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get install -y /tmp/chrome.deb \
-    && rm /tmp/chrome.deb \
-    && rm -rf /var/lib/apt/lists/*
+# Python + Google Chrome + Xvfb come from a local, version-tagged base image
+# (docker/chrome-base.Dockerfile, scripts/build_chrome_base.sh): Google only
+# serves the current Chrome, so installing it here changed Chrome silently on
+# any cold-cache build. Upgrading Chrome = building a new base and changing
+# this tag, then scripts/deploy.sh (its gate tests the new image first).
+ARG CHROME_BASE=rtjobs-chrome-base:151.0.7922.108
+FROM ${CHROME_BASE}
 
 # ---------------------------------------------------------------------------
 # Non-root user — Chrome still needs --no-sandbox in containers even as
@@ -23,8 +17,9 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 # Python deps
 # ---------------------------------------------------------------------------
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements.lock pins every transitive version (constraints file).
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.txt -c requirements.lock
 
 # xauth is only used by xvfb-run (manual debugging); production starts Xvfb
 # in docker/entrypoint.sh. Kept in its own layer after pip so the slow

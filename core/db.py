@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS scrape_health (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     last_alert_at TEXT,
+    fail_streak INTEGER NOT NULL DEFAULT 0,
+    recent_failures TEXT NOT NULL DEFAULT '[]',
+    pending_note TEXT,
     PRIMARY KEY (source, check_name)
 );
 CREATE TABLE IF NOT EXISTS pipeline_state (
@@ -221,6 +224,14 @@ def init_db():
                 conn.execute(f"ALTER TABLE job_enrichments ADD COLUMN {name} {definition}")
         if 'batch_id' not in {row['name'] for row in conn.execute('PRAGMA table_info(runs)')}:
             conn.execute('ALTER TABLE runs ADD COLUMN batch_id INTEGER')
+        health_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scrape_health)")}
+        for name, definition in {
+            "fail_streak": "INTEGER NOT NULL DEFAULT 0",
+            "recent_failures": "TEXT NOT NULL DEFAULT '[]'",
+            "pending_note": "TEXT",
+        }.items():
+            if name not in health_columns:
+                conn.execute(f"ALTER TABLE scrape_health ADD COLUMN {name} {definition}")
         # Keep previous results for audit; never reinterpret an industry as a
         # profession or enqueue a paid historical reclassification implicitly.
         conn.execute("UPDATE job_enrichments SET state='obsolete' "
