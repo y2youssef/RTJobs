@@ -257,3 +257,19 @@ network drops; every board recovered on the next run; one Indeed run was
 stopped by the 360s watchdog at 00:12.
 Rollback: retag `hotfix-clean-quit-20261009` (or `production-linkedin-scroll-20261009`)
 as latest, set `NAUKRIGULF_ENABLED=false`, `docker compose --profile enrichment up -d`.
+
+## 2026-10-10 18:30 Cairo: deploy gate + pinning + alert rules (`cf7db61`)
+
+First deploy through `scripts/deploy.sh` (run by the user). Build + gate in the
+candidate: 42 offline checks, scrapling contract ok, Chrome 151.0.7922.108
+(18:28:31-18:30:30). No cycle was running and the next tick was 150s away, so
+it switched at once (18:30:30); the 2 LinkedIn jobs the 18:30:00 cycle found
+were delivered at 18:30:32 while the workers restarted. Watched cycles: 18:30:32
+(NaukriGulf `degraded`, `ERR_NETWORK_CHANGED` while the containers were being
+recreated, same as at the 22:56 switch on Oct 9; Wuzzuf retried past it) and
+18:33:00 (all four boards ok). Verdict 18:33:06. No alert for the NaukriGulf
+blip (new confirm-twice rule; `scrape_health_episodes` holds its one failure).
+Image `rtjobs-scraper:production-cf7db61-20261010-1828`; rollback target
+`rtjobs-scraper:rollback-20261010-1828` (= `production-main-726a07e-20261009`,
+safe: scrape_health keeps its 8 columns). Rollback: retag it as latest,
+`docker compose --profile enrichment up -d`.

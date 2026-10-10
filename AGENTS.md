@@ -482,6 +482,10 @@ port and logins disabled — never the production profile directly.
   enabled 22:56 (profile seeded from the supervised staging profile). First 2.5 h:
   cycle p50 12s (was 31s), all 71 new jobs delivered. See docs/DEPLOYMENT.md.
 
+- 2026-10-10 18:30 Cairo: main `cf7db61` deployed with scripts/deploy.sh (image
+  `production-cf7db61-20261010-1828`, rollback `rollback-20261010-1828`): deploy
+  gate, pinned Chrome/deps, scrapling contract, confirm-twice alerts. See docs/DEPLOYMENT.md.
+
 ## Immediate queue notifications
 - After committing a complete scrape cycle, notify `enrichment`; after committing
   validated results, notify `delivery` via `core/wakeup.py`. Notifications must
