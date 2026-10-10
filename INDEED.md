@@ -40,6 +40,10 @@ https://eg.indeed.com/jobs?q=&l=مصر&radius=100&sort=date&vjk=992741b34fe51afd
   persisted (`telegram_update_offset`); the window opens at alert time so
   stale codes are never consumed. A missed code cools down 30 min, then the
   next run starts a fresh episode (fresh code + fresh prompt).
+- The wait does not hold the other boards: the cycle closes without Indeed
+  and the next cycles run LinkedIn/Wuzzuf/NaukriGulf on schedule while Indeed
+  keeps its Chrome and waits. After the code the run ends `signed_in` (no
+  scrape); the next cycle scrapes Indeed (main.py `_detached`).
 - Gotchas:
   - Navigate with ONE in-browser `page.goto` (page_action), NOT the
     engine's redirect chain: the engine follows the 307/302 to

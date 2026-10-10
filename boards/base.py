@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 
 from config import (BOARD_TIME_BUDGET_SECONDS, CHROME_DEBUG_PORT, HEADLESS,
                     KILL_CHROME_ON_START, MARKUP_DIR)
+from core import board_budget
 from core.board_budget import BoardTimeout, time_budget
 from core.browser import chrome_session, install_cdp_default_context_patch, install_cloudflare_fast_path
 
@@ -110,11 +111,31 @@ class JobBoard(ABC):
     # that do not call JobBoard.__init__).
     _saved: int = 0
     _saved_ids: frozenset = frozenset()
+    _person_waits_at_start: int = 0
 
     def __init__(self):
         self.selectors = load_board_selectors(self.name)
         self._saved = 0
         self._saved_ids = frozenset()
+        self._person_waits_at_start = board_budget.person_waits()
+
+    def waited_for_person(self) -> bool:
+        """True once this run has waited for a person (emailed code, checkpoint)."""
+        return board_budget.person_waits() > self._person_waits_at_start
+
+    def finish_after_person_wait(self, record) -> int:
+        """End a run that just signed in after waiting for a person.
+
+        main.py closes the cycle without a board that waits for a person, so
+        the other boards keep their schedule (Oct 9-10: twelve 10-minute
+        Indeed code waits froze every board for 130 minutes). Jobs saved after
+        that point would land in a cycle that is already closed, so the run
+        stops here, signed in, and the next cycle scrapes the board (at most
+        one interval later).
+        """
+        logger.info(f"[{self.name}] Signed in after waiting for you; the next cycle scrapes.")
+        record.finish("signed_in")
+        return 0
 
     def save_now(self, job: dict):
         """Persist one finished job immediately (spiders call this per job).

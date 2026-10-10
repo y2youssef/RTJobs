@@ -152,8 +152,10 @@ rendering flags.
   path and the `li_at` cookie). Only a signed-out landing runs the login check
   below, then the search again.
 - **Login page** → human-like fill (EN + AR), verify routing after submit.
-- **Checkpoint/2FA** → alert sent to the failure channel; the run **pauses up
-  to `CHECKPOINT_WAIT_SECONDS`** so you can solve it via CDP; solved → resumes.
+- **Checkpoint/2FA** → alert sent to the failure channel; the run **waits up
+  to `CHECKPOINT_WAIT_SECONDS`** so you can solve it via CDP. The other boards
+  keep their 3-minute schedule meanwhile (the cycle closes without the waiting
+  board). Solved → the run ends signed in and the next cycle scrapes LinkedIn.
 - **Failures** → consecutive-failure counter with escalating cooldowns
   (5m → 15m → 30m). At `MAX_LOGIN_RETRIES` the failure channel gets an alert,
   runs are skipped while blocked, and after the cooldown the profile is wiped

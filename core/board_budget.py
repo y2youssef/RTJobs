@@ -15,6 +15,12 @@ Indeed run spent 37 minutes in repeated Cloudflare Turnstile solves and
 thread; BoardTimeout derives from BaseException so the many
 `except Exception` guards in browser code cannot swallow it. Waits for a
 person (LinkedIn checkpoint, Indeed emailed code) run inside paused().
+
+A board waiting for a person no longer holds the cycle either: the parent sees
+the open pause in the state file (waiting_for_person) and closes the cycle
+without it, and the board ends its run after the wait instead of scraping
+(person_waits). On the night of Oct 9-10 twelve 10-minute Indeed code waits
+froze every board for 130 minutes in total.
 """
 
 from contextlib import contextmanager
@@ -25,6 +31,7 @@ import time
 
 STATE_ENV = "RTJOBS_BUDGET_FILE"
 _paused_total = 0.0
+_person_waits = 0  # paused() entries in this process
 
 
 def _write_state(paused_since: float | None):
@@ -52,6 +59,20 @@ def active_seconds(started: float, state_path: str, now: float | None = None) ->
     return (now - started) - paused
 
 
+def waiting_for_person(state_path: str) -> bool:
+    """Parent side: the child is inside paused() right now."""
+    try:
+        with open(state_path) as handle:
+            return bool(json.load(handle).get("paused_since"))
+    except (OSError, ValueError):
+        return False
+
+
+def person_waits() -> int:
+    """How many times this process has waited for a person (see JobBoard)."""
+    return _person_waits
+
+
 class BoardTimeout(BaseException):
     """The board exceeded BOARD_TIME_BUDGET_SECONDS (excluding paused waits)."""
 
@@ -74,7 +95,8 @@ def time_budget(seconds: float):
 @contextmanager
 def paused():
     """Stop the clock while waiting for a person (2FA solve, emailed code)."""
-    global _paused_total
+    global _paused_total, _person_waits
+    _person_waits += 1
     remaining, _ = signal.getitimer(signal.ITIMER_REAL)
     signal.setitimer(signal.ITIMER_REAL, 0)
     began = time.time()

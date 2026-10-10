@@ -50,7 +50,8 @@ def collect_checks(now=None, started_at=None):
                 f'{board}: no recent scrape start within {config.PIPELINE_SCRAPER_STALE_SECONDS}s; check scheduler, host uptime and network.')
             # Parser alerts carry snapshots. This separate check prevents a
             # recent failed scrape from being advertised as a healthy pipeline.
-            checks['scrape_result_' + board] = (bool(enabled and completed and completed['status'] != 'ok'),
+            # signed_in: the run signed in after waiting for you; the next cycle scrapes.
+            checks['scrape_result_' + board] = (bool(enabled and completed and completed['status'] not in ('ok', 'signed_in')),
                 f'{board}: latest completed scrape was {completed["status"] if completed else "unobserved"}; see board alerts and logs.')
         # A cycle still scraping (e.g. holding for a 2FA/code solve) is not yet
         # classifier work, and held-back cycles have their own check below.

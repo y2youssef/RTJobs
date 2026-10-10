@@ -330,6 +330,20 @@ Set dummy env before importing config in test scripts:
   every wait for a PERSON in `board_budget.paused()` (LinkedIn checkpoint,
   Indeed emailed code). Timeouts and board crashes alert once per episode
   (run-health checks `time_budget` / `board_run`), not every run.
+- A wait for a PERSON never holds the cycle (branch `reliability/person-wait`,
+  2026-10-10; the night of Oct 9-10 twelve 10-min Indeed code waits froze every
+  board for 130 min). The parent sees `paused_since` in the child's budget file
+  (`board_budget.waiting_for_person`), DETACHES it (`main._detached`) and closes
+  the cycle; the child keeps waiting with its Chrome. While one is detached the
+  parent stays up and runs the next cycles itself on the grid (`_wait_for_tick`;
+  ofelia skips ticks while the container runs), skipping that board and sparing
+  its Chrome group in `kill_stray_chrome(keep_ports=...)`. After the wait the
+  board ends its run `signed_in` WITHOUT scraping (`JobBoard.finish_after_person_wait`:
+  its saves would land in a closed cycle); the next cycle scrapes it. When no
+  board is detached any more the process exits and ofelia takes over. Signals
+  stop detached children too; the budget still applies after the wait.
+  deploy.sh waits while a board waits, and treats a board already stuck on a
+  login before the switch as "unverified" (not a rollback).
 - Telegram's shared session drops pooled sockets after 60s idle: Telegram closes
   idle keep-alives, and reuse failed the first send after every quiet spell.
 

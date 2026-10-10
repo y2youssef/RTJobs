@@ -14,6 +14,7 @@ import subprocess
 import sys
 import signal
 import tempfile
+import threading
 import time
 from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
@@ -626,6 +627,7 @@ def verify(directory):
     verify_browser_recovery()
     verify_linkedin_login()
     verify_first_page_and_schedule()
+    verify_person_wait()
     verify_browser_launch()
     verify_reposts()
     verify_direct_search()
@@ -968,6 +970,212 @@ def verify_first_page_and_schedule():
     with patch.object(entry, "BOARDS", [Healthy]), patch.object(entry, "ENRICHMENT_ENABLED", True):
         assert entry._run_boards() == 0
     print("PASS broken selectors skip only their board, alert once, non-zero exit")
+
+
+def verify_person_wait():
+    """A board waiting for a person (Indeed's emailed code, a LinkedIn
+    checkpoint) never holds the cycle: on Oct 9-10 twelve such waits froze
+    every board for 130 minutes. The cycle closes without it, later cycles
+    keep the grid and skip it, its Chrome survives the stray-Chrome cleanup,
+    its run ends signed in, and a signal or the budget still stops it."""
+    import main as entry
+    import boards.indeed as indeed_board
+    import boards.linkedin as linkedin_board
+    from core import board_budget, browser
+
+    # Board side: a run that waited for a person ends signed in without
+    # scraping (its jobs would land in a closed cycle); a login that needed
+    # nobody scrapes as before.
+    class Record:
+        status = None
+        def finish(self, status, **kw):
+            self.status = self.status or status
+    for cls, flag in ((indeed_board.IndeedBoard, "logged_out"), (linkedin_board.LinkedInBoard, "needs_login")):
+        for waits in (True, False):
+            board, record, calls = cls(), Record(), []
+            def spider(cdp, _calls=calls):
+                _calls.append(cdp)
+                first = len(_calls) == 1
+                return SimpleNamespace(status="ok", error=""), {
+                    "items": [], "listings": {}, "blocked": False, "login_redirect": False,
+                    "logged_out": False, "needs_login": False, "signed_in": not first, flag: first}
+            def login_check(cdp, _waits=waits):
+                if _waits:
+                    with board_budget.paused():
+                        pass
+                return True
+            with patch.object(board, "_spider", side_effect=spider), \
+                    patch.object(board, "_login_check", side_effect=login_check):
+                assert board.scrape("cdp", record) == 0
+            expected = ("signed_in", 1) if waits else ("ok", 2)
+            assert (record.status, len(calls)) == expected, (cls.name, waits, record.status, len(calls))
+    assert board_budget.person_waits() >= 2
+
+    # Stray-Chrome cleanup spares a waiting board's whole process group.
+    procs = {100: (100, "/opt/google/chrome/chrome --remote-debugging-port=9224 --user-data-dir=/app/indeedprofile"),
+             101: (100, "/opt/google/chrome/chrome --type=renderer"),
+             200: (200, "/opt/google/chrome/chrome --remote-debugging-port=9222"),
+             201: (200, "/opt/google/chrome/chrome --type=gpu-process"),
+             300: (300, "/opt/google/chrome/chrome --remote-debugging-port=92240")}
+    assert browser._stray_chrome_pids(procs, [9224]) == [200, 201, 300]
+    assert browser._stray_chrome_pids(procs, []) == [100, 101, 200, 201, 300]
+    with patch.object(browser, "_chrome_processes", return_value=procs), patch.object(browser.os, "kill") as kill, \
+            patch.object(browser.subprocess, "run") as pkill, patch("config.KILL_CHROME_ON_START", True):
+        browser.kill_stray_chrome(keep_ports=[9224])
+        assert sorted(call.args[0] for call in kill.call_args_list) == [200, 201, 300] and not pkill.called
+        browser.kill_stray_chrome()
+        assert pkill.call_args.args[0] == ["pkill", "-f", "chrome"]
+
+    # Parent side, with real child processes that pause like a board does.
+    child = ("import sys, time\n"
+             f"sys.path.insert(0, {str(ROOT)!r})\n"
+             "from core import board_budget\n"
+             "pause, after = float(sys.argv[1]), float(sys.argv[2])\n"
+             "if pause:\n"
+             "    with board_budget.paused():\n"
+             "        time.sleep(pause)\n"
+             "time.sleep(after)\n")
+    plans, spawned = {}, []
+    def spawn(name, batch):
+        path = entry._budget_file(name)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        pause, after = plans[name].pop(0) if len(plans[name]) > 1 else plans[name][0]
+        proc = subprocess.Popen([sys.executable, "-c", child, str(pause), str(after)],
+                                env={**os.environ, board_budget.STATE_ENV: path})
+        spawned.append((name, time.time(), proc))
+        return proc
+    boards = [type(name.title(), (), {"name": name, "enabled": True, "port_offset": offset})
+              for offset, name in enumerate(("linkedin", "wuzzuf", "indeed"))]
+    period = 2.0
+    starts, finishes = [], []
+    real_start, real_finish = entry.db.start_scrape_batch, entry.db.finish_scrape_batch
+    def start_batch():
+        starts.append(time.time()); return real_start()
+    def finish_batch(batch_id, interrupted=False):
+        finishes.append(time.time()); return real_finish(batch_id, interrupted=interrupted)
+    def after_tick():  # start just after a tick so the timeline below is predictable
+        while not 0.1 <= time.time() % period <= 0.3:
+            time.sleep(0.02)
+
+    def cycle_patches(stack, signals=False):
+        stack.enter_context(patch.object(entry, "BOARDS", boards))
+        stack.enter_context(patch.object(entry, "BOARDS_PARALLEL", True))
+        stack.enter_context(patch.object(entry, "ENRICHMENT_ENABLED", True))
+        stack.enter_context(patch.object(entry, "_spawn_board", side_effect=spawn))
+        stack.enter_context(patch.object(entry, "_period", return_value=period))
+        stack.enter_context(patch.object(entry.db, "start_scrape_batch", side_effect=start_batch))
+        stack.enter_context(patch.object(entry.db, "finish_scrape_batch", side_effect=finish_batch))
+        stack.enter_context(patch.object(entry.sys, "argv", ["main.py", "--scheduled"]))
+        if not signals:
+            stack.enter_context(patch.object(entry, "_install_signal_handlers"))
+        return (stack.enter_context(patch.object(entry.browser, "kill_stray_chrome")),
+                stack.enter_context(patch.object(entry, "_start_next_cycle_now")))
+
+    # Indeed waits 4.5s for its code; LinkedIn and Wuzzuf take 0.1s.
+    plans.update(linkedin=[(0, 0.1)], wuzzuf=[(0, 0.1)], indeed=[(4.5, 0)])
+    with ExitStack() as stack:
+        stray, chain = cycle_patches(stack)
+        after_tick()
+        began = time.time()
+        assert entry.main() == 0
+        ended = time.time()
+    names = [name for name, _at, _proc in spawned]
+    assert finishes[0] - starts[0] < period, "the first cycle must close without the waiting board"
+    assert len(starts) >= 3 and names.count("indeed") == 1, (len(starts), names)
+    assert names.count("linkedin") == names.count("wuzzuf") == len(starts), "the other boards run every cycle"
+    assert all(at % period < 0.9 for at in starts[1:]), "follow-up cycles start on the scheduler's grid"
+    indeed_proc = next(proc for name, _at, proc in spawned if name == "indeed")
+    assert indeed_proc.returncode == 0, "a waiting board is never killed when its cycle closes"
+    port = entry.CHROME_DEBUG_PORT + 2
+    assert stray.call_args_list[0].kwargs["keep_ports"] == []
+    assert all(call.kwargs["keep_ports"] == [port] for call in stray.call_args_list[1:]), \
+        "the waiting board's Chrome must survive the stray cleanup"
+    assert ended - began < 4.5 + period, "the process exits once the wait ends (ofelia takes over)"
+    assert not chain.called and not entry._detached and not entry._children
+    print("PASS person wait: the cycle closes without the waiting board, later cycles keep the 3-minute grid "
+          "and skip it, its Chrome is spared, the run ends signed in")
+
+    # A signal while a board waits stops it too (compose would otherwise kill
+    # it without cleanup when the container stops).
+    spawned.clear(); starts.clear(); finishes.clear()
+    plans.update(linkedin=[(0, 0.1)], wuzzuf=[(0, 0.1)], indeed=[(60, 0)])
+    previous = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    timer = threading.Timer(1.2, os.kill, (os.getpid(), signal.SIGTERM))
+    try:
+        with ExitStack() as stack:
+            cycle_patches(stack, signals=True)
+            after_tick()
+            timer.start()
+            try:
+                entry.main()
+                raise AssertionError("SIGTERM must stop the process")
+            except SystemExit:
+                pass
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGTERM, previous[0]); signal.signal(signal.SIGINT, previous[1])
+        entry._shutting_down = False
+    indeed_proc = next(proc for name, _at, proc in spawned if name == "indeed")
+    assert indeed_proc.poll() == -signal.SIGTERM, indeed_proc.poll()
+    assert not entry._detached and not entry._children
+    with entry.db.get_db() as conn:
+        assert not conn.execute("SELECT COUNT(*) FROM scrape_batches WHERE status='running'").fetchone()[0]
+
+    # The time budget still applies after the wait (the wait itself never counts).
+    spawned.clear()
+    plans.update(indeed=[(1.5, 60)])
+    killed = []
+    with patch.object(entry, "_spawn_board", side_effect=spawn), patch.object(entry, "BOARD_TIME_BUDGET_SECONDS", 0), \
+            patch.object(entry, "_KILL_GRACE_SECONDS", 1.0), \
+            patch.object(entry.subprocess, "run", return_value=SimpleNamespace(stdout="")), \
+            patch.object(entry, "report_run_checks", side_effect=lambda name, checks: killed.append(time.time())):
+        assert entry._run_parallel(boards[2:]) is False and "indeed" in entry._detached
+        deadline = time.time() + 15
+        while entry._detached and time.time() < deadline:
+            entry._tend_detached()
+            time.sleep(0.1)
+    name, spawned_at, proc = spawned[0]
+    assert not entry._detached and proc.poll() == -signal.SIGTERM and killed
+    assert killed[0] - spawned_at > 1.5, "paused time must not count against the budget"
+    entry._children.clear()
+    print("PASS person wait: a signal stops the waiting board too; the budget still applies after the wait")
+
+    # deploy.sh: a board already stuck on a login before the switch is
+    # unverified, not a reason to roll back; a login that broke after it is.
+    deploy = (ROOT / "scripts/deploy.sh").read_text()
+    body = deploy.index("\n", deploy.index("<<'PY'")) + 1  # the heredoc starts on the next line
+    verdict = deploy[body:deploy.index("\nPY\n", body)]
+    def judge(before, cycles):
+        path = Path(tempfile.mkdtemp()) / "verdict.db"
+        conn = sqlite3.connect(path)
+        conn.executescript("CREATE TABLE scrape_batches (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT);"
+                           "CREATE TABLE runs (id INTEGER PRIMARY KEY, source TEXT, status TEXT, error TEXT,"
+                           " batch_id INTEGER, started_at TEXT);")
+        for source, status in before.items():
+            conn.execute("INSERT INTO runs (source, status, started_at) VALUES (?,?,?)",
+                         (source, status, "2026-10-10 11:57:00"))
+        for index, runs in enumerate(cycles):
+            at = f"2026-10-10 12:0{3 * index}:00"
+            batch = conn.execute("INSERT INTO scrape_batches (started_at, finished_at) VALUES (?,?)", (at, at)).lastrowid
+            for source, status in runs.items():
+                conn.execute("INSERT INTO runs (source, status, batch_id, started_at) VALUES (?,?,?,?)",
+                             (source, status, batch, at))
+        conn.commit(); conn.close()
+        return subprocess.run([sys.executable, "-", "2026-10-10 12:00:00", "2", str(path)], input=verdict,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    ok = {"linkedin": "ok", "wuzzuf": "ok"}
+    assert judge({}, [ok, ok]) == "PASS linkedin ok/ok; wuzzuf ok/ok"
+    out = judge({"indeed": "login_failed"}, [{**ok, "indeed": "running"}, ok])
+    assert out.startswith("PASS") and "unverified" in out and "indeed running" in out, out
+    out = judge({"indeed": "ok"}, [{**ok, "indeed": "login_failed"}, {**ok, "indeed": "login_failed"}])
+    assert out == "FAIL boards never ok: indeed login_failed/login_failed", out
+    assert judge({}, [{**ok, "indeed": "signed_in"}, ok]).startswith("PASS")
+    assert judge({}, [{**ok, "linkedin": "degraded"}, {**ok, "linkedin": "degraded"}]).startswith("FAIL")
+    assert judge({}, [ok]) == "WAIT 1/2 cycles finished"
+    print("PASS deploy verdict: a login already pending before the switch is unverified, a login broken by it rolls back")
 
 
 def verify_linkedin_login():

@@ -10,6 +10,13 @@ the boards run concurrently as child processes (`main.py --board NAME
 --batch-id N`, each with its own Chrome, profile and CDP port), so the cycle
 ends when the slowest board does. The parent owns the lock, the batch and
 the overrun chaining; children only scrape their board into that batch.
+
+A board that waits for a person (Indeed's emailed code, a LinkedIn checkpoint)
+does not hold the cycle: the parent closes the cycle without it and keeps it
+running in the background ("detached"; it ends its run after the wait, see
+JobBoard.finish_after_person_wait). While one waits, this process stays up
+and runs the next cycles itself on the scheduler's grid, skipping that board,
+because ofelia (no-overlap) skips every tick while the container runs.
 """
 
 import fcntl
@@ -34,7 +41,10 @@ from core import board_budget
 logger = logging.getLogger(__name__)
 
 _shutting_down = False
-_children: list[subprocess.Popen] = []  # board processes of the running cycle
+_children: list[subprocess.Popen] = []  # board processes of the running cycle + detached ones
+# Boards still waiting for a person after their cycle closed:
+# name -> {"proc", "started", "port", "batch"}.
+_detached: dict[str, dict] = {}
 
 
 def _handle_term(signum, _frame):
@@ -80,13 +90,18 @@ BOARDS = [
 ]
 
 
-def _missed_tick(launched: float, now: float, minutes: int = SCRAPE_INTERVAL_MINUTES) -> bool:
+def _period() -> float:
+    """Seconds between scheduler ticks."""
+    return SCRAPE_INTERVAL_MINUTES * 60
+
+
+def _missed_tick(launched: float, now: float, minutes: int | None = None) -> bool:
     """True when a scheduler tick fell inside this run.
 
     Ofelia's "*/N" ticks sit on epoch multiples of N minutes (N divides 60,
     enforced in config), so a tick passed iff the run crossed one.
     """
-    period = minutes * 60
+    period = minutes * 60 if minutes else _period()
     return int(now // period) > int(launched // period)
 
 
@@ -133,13 +148,32 @@ def main() -> int:
     # grid and this entry covers docker start + xvfb + imports.
     timing.record("scraper", "process_start", 0)
 
+    result = _cycle()
+    if result is None:
+        return 0
+    try:
+        # A board waiting for a person outlived its cycle: run the next
+        # cycles here on the grid (ofelia skips its ticks while we run).
+        while _detached and _wait_for_tick(launched):
+            launched = time.time()
+            result = 1 if (_cycle() or result) else 0
+    finally:
+        _stop_detached()  # normally nothing left; on a signal/crash, stop them
+
+    if "--scheduled" in sys.argv and _missed_tick(launched, time.time()):
+        _start_next_cycle_now()
+    return result
+
+
+def _cycle() -> int | None:
+    """One scrape cycle under the scraper lock; None if another cycle holds it."""
     # Serialize manual runs too: a cycle must never close another live scrape.
     with open(DB_PATH + '.scraper.lock', 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             logger.info('Another scrape cycle is active')
-            return 0
+            return None
         batch_id = db.start_scrape_batch()
         interrupted = True
         try:
@@ -149,10 +183,31 @@ def main() -> int:
         finally:
             db.finish_scrape_batch(batch_id, interrupted=interrupted)
             db.touch_worker('scraper', 'idle')
-
-    if "--scheduled" in sys.argv and _missed_tick(launched, time.time()):
-        _start_next_cycle_now()
     return result
+
+
+def _wait_for_tick(launched: float) -> bool:
+    """Between cycles while a board waits for a person.
+
+    True at the next scheduler tick (at once if the last cycle, started at
+    `launched`, overran one); False as soon as every waiting board has
+    finished, so this process can exit and ofelia takes over again.
+    """
+    _tend_detached()
+    if not _detached:
+        return False
+    if _missed_tick(launched, time.time()):
+        return True
+    period = _period()
+    next_tick = (time.time() // period + 1) * period
+    logger.info("Still waiting for a person: %s. Next cycle at the %s tick (without them).",
+                ", ".join(_detached), time.strftime("%H:%M:%S", time.localtime(next_tick)))
+    while time.time() < next_tick:
+        _tend_detached()
+        if not _detached:
+            return False
+        time.sleep(0.5)
+    return True
 
 
 def _run_boards() -> int:
@@ -161,9 +216,15 @@ def _run_boards() -> int:
     for cls in BOARDS:
         if cls not in enabled:
             logger.info("Board '%s' is disabled — skipping.", cls.name)
+    _tend_detached()
+    for cls in enabled:
+        if cls.name in _detached:
+            logger.info("Board '%s' is still waiting for a person from an earlier cycle — skipping.", cls.name)
+    enabled = [cls for cls in enabled if cls.name not in _detached]
     # Once, before any Chrome starts: with boards in parallel a per-board
-    # `pkill -f chrome` would kill the other boards' browsers.
-    browser.kill_stray_chrome()
+    # `pkill -f chrome` would kill the other boards' browsers. A waiting
+    # board's Chrome holds the page it waits on: spare it.
+    browser.kill_stray_chrome(keep_ports=[entry["port"] for entry in _detached.values()])
     if BOARDS_PARALLEL and len(enabled) > 1:
         failed = _run_parallel(enabled)
     else:
@@ -249,14 +310,17 @@ def _spawn_board(name: str, batch_id: int | None) -> subprocess.Popen:
 def _run_parallel(boards: list) -> bool:
     """All boards at once; wait for the slowest. Returns True if any failed.
 
-    The cycle (and its single classifier request) closes only after every
-    child exits; each child is bounded by BOARD_TIME_BUDGET_SECONDS except
-    while it waits for a person. Signals are forwarded to the children.
+    The cycle (and its single classifier request) closes once every child
+    has exited or is waiting for a person (then detached: it keeps running
+    and later cycles skip its board until it exits). Each child is bounded by
+    BOARD_TIME_BUDGET_SECONDS except while it waits for a person. Signals are
+    forwarded to the children, detached ones included.
     """
     batch = db.active_batch()
-    _children.clear()
+    _children[:] = [entry["proc"] for entry in _detached.values()]
     procs, started, timed_out = {}, {}, set()
     ports = {cls.name: CHROME_DEBUG_PORT + getattr(cls, "port_offset", 0) for cls in boards}
+    completed = False
     try:
         for cls in boards:
             procs[cls.name] = _spawn_board(cls.name, batch)
@@ -264,29 +328,76 @@ def _run_parallel(boards: list) -> bool:
             _children.append(procs[cls.name])
         logger.info("Running boards in parallel: %s", ", ".join(procs))
         limit = BOARD_TIME_BUDGET_SECONDS + _KILL_GRACE_SECONDS
-        while any(proc.poll() is None for proc in procs.values()):
+        while any(proc.poll() is None and name not in _detached for name, proc in procs.items()):
             for name, proc in procs.items():
-                if (proc.poll() is None and name not in timed_out
-                        and board_budget.active_seconds(started[name], _budget_file(name)) > limit):
+                if proc.poll() is not None or name in _detached or name in timed_out:
+                    continue
+                if board_budget.active_seconds(started[name], _budget_file(name)) > limit:
                     timed_out.add(name)
                     _kill_board(name, proc, ports[name], batch)
+                elif board_budget.waiting_for_person(_budget_file(name)):
+                    _detached[name] = {"proc": proc, "started": started[name], "port": ports[name], "batch": batch}
+                    logger.info("[%s] Waiting for a person — closing the cycle without it; it keeps "
+                                "waiting, and the next cycles run the other boards on schedule.", name)
+            _tend_detached()  # earlier cycles' waiting boards: reap, enforce the budget
             time.sleep(0.2)
+        completed = True
     finally:
-        for proc in procs.values():
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
-        deadline = time.monotonic() + 25  # within compose's 30s stop grace
-        for proc in procs.values():
+        # On a signal or crash, stop everything (waiting boards too) at once,
+        # within compose's 30s stop grace; normally only stragglers remain.
+        stop = [proc for name, proc in procs.items()
+                if proc.poll() is None and not (completed and name in _detached)]
+        if not completed:
+            stop += [entry["proc"] for entry in _detached.values() if entry["proc"].poll() is None]
+        for proc in stop:
+            proc.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 25
+        for proc in stop:
             try:
                 proc.wait(timeout=max(0.1, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
-        _children.clear()
-    codes = {name: proc.returncode for name, proc in procs.items()}
+        _children[:] = [entry["proc"] for entry in _detached.values()]
+    codes = {name: proc.returncode for name, proc in procs.items() if name not in _detached}
     if any(codes.values()):
         logger.warning("Board processes exited with %s", codes)
     return any(codes.values())
+
+
+def _tend_detached():
+    """Reap waiting boards that finished; stop one that blew its budget
+    (the person wait itself is paused time and never counts)."""
+    limit = BOARD_TIME_BUDGET_SECONDS + _KILL_GRACE_SECONDS
+    for name, entry in list(_detached.items()):
+        proc = entry["proc"]
+        if proc.poll() is not None:
+            logger.info("[%s] Finished its wait for a person (exit %s); back in the next cycle.",
+                        name, proc.returncode)
+        elif board_budget.active_seconds(entry["started"], _budget_file(name)) > limit:
+            _kill_board(name, proc, entry["port"], entry["batch"])
+        else:
+            continue
+        del _detached[name]
+        if proc in _children:
+            _children.remove(proc)
+
+
+def _stop_detached():
+    """Signal/crash path: a waiting board must not outlive this process
+    (the container would stop and kill it without cleanup)."""
+    live = [entry["proc"] for entry in _detached.values() if entry["proc"].poll() is None]
+    for proc in live:
+        proc.send_signal(signal.SIGTERM)
+    deadline = time.monotonic() + 25
+    for proc in live:
+        try:
+            proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    _detached.clear()
+    _children.clear()
 
 
 def _kill_board(name: str, proc: subprocess.Popen, port: int, batch: int | None):

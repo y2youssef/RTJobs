@@ -71,6 +71,8 @@ class LinkedInBoard(JobBoard):
                 logger.info("[linkedin] Login check failed — skipping scrape.")
                 record.finish("login_failed")
                 return 0
+            if self.waited_for_person():  # a checkpoint you solved: the cycle went on without us
+                return self.finish_after_person_wait(record)
             health, result = self._spider(cdp)
             if result.get("needs_login"):
                 result["login_redirect"] = True  # signed in a moment ago, rejected again

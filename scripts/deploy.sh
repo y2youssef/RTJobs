@@ -16,6 +16,9 @@
 # 5. Watch the next VERIFY_CYCLES cycles: roll back to the previous image if
 #    any board fails in all of them, a run hits the scrapling contract or a
 #    config error, a worker is not running, or the cycles never finish.
+#    A board that was already stuck on a login before the switch (waiting for
+#    your Indeed code / checkpoint solve) is reported as unverified instead:
+#    its failures say nothing about the new image.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -75,8 +78,15 @@ interval=$(( $(sed -n 's/^SCRAPE_INTERVAL_MINUTES=//p' .env 2>/dev/null | tail -
 [ "$interval" -gt 0 ] 2>/dev/null || interval=3
 interval=$(( interval * 60 ))
 log "Waiting for a quiet moment (no cycle running, next tick >= 20s away)"
+waited=0
 while :; do
-    if docker ps --format '{{.Names}}' | grep -qx rtjobs; then sleep 2; continue; fi
+    if docker ps --format '{{.Names}}' | grep -qx rtjobs; then
+        waited=$((waited + 2))
+        # A board waiting for a person keeps the container up for its whole
+        # wait (up to 10 min); switching now would end that wait.
+        [ "$waited" = 60 ] && log "Still running after 60s: probably a board waiting for a login code or checkpoint; waiting for it to finish."
+        sleep 2; continue
+    fi
     left=$(( interval - $(date +%s) % interval ))
     if [ "$left" -ge 20 ]; then break; fi
     sleep $(( left + 3 ))
@@ -107,9 +117,10 @@ while :; do
     verdict=$(docker compose exec -T enrichment python - "$switched" "$VERIFY_CYCLES" <<'PY' 2>&1 || true
 import sqlite3, sys
 since, needed = sys.argv[1], int(sys.argv[2])
-c = sqlite3.connect("file:/data/rtjobs.db?mode=ro", uri=True)
+c = sqlite3.connect(f"file:{sys.argv[3] if len(sys.argv) > 3 else '/data/rtjobs.db'}?mode=ro", uri=True)
 cycles = c.execute("SELECT id FROM scrape_batches WHERE started_at >= ? AND finished_at IS NOT NULL"
                    " ORDER BY id LIMIT ?", (since, needed)).fetchall()
+LOGIN = {"login_failed", "session_expired", "signed_in", "running"}  # running = still waiting for you
 runs = {}
 for (batch,) in cycles:
     for source, status, error in c.execute("SELECT source, status, COALESCE(error, '') FROM runs WHERE batch_id=?", (batch,)):
@@ -118,9 +129,19 @@ for (batch,) in cycles:
         runs.setdefault(source, []).append(status)
 if len(cycles) < needed:
     print(f"WAIT {len(cycles)}/{needed} cycles finished"); sys.exit()
-broken = [f"{source} {'/'.join(statuses)}" for source, statuses in runs.items() if "ok" not in statuses]
+def stuck_before(source):
+    row = c.execute("SELECT status FROM runs WHERE source=? AND started_at < ? AND status != 'running'"
+                    " ORDER BY id DESC LIMIT 1", (source, since)).fetchone()
+    return bool(row) and row[0] in LOGIN
+broken, unverified = [], []
+for source, statuses in runs.items():
+    if "ok" in statuses or "signed_in" in statuses:
+        continue
+    (unverified if set(statuses) <= LOGIN and stuck_before(source) else broken).append(
+        f"{source} {'/'.join(statuses)}")
+note = f" (unverified, login already pending before the switch: {', '.join(unverified)})" if unverified else ""
 print(("FAIL boards never ok: " + ", ".join(broken)) if broken else
-      "PASS " + "; ".join(f"{source} {'/'.join(statuses)}" for source, statuses in sorted(runs.items())))
+      "PASS " + "; ".join(f"{source} {'/'.join(statuses)}" for source, statuses in sorted(runs.items())) + note)
 PY
 )
     case "$verdict" in

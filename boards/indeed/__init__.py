@@ -39,6 +39,8 @@ class IndeedBoard(JobBoard):
                 logger.info("[indeed] Login check failed — skipping scrape.")
                 record.finish("login_failed")
                 return 0
+            if self.waited_for_person():  # the emailed code: the cycle went on without us
+                return self.finish_after_person_wait(record)
             health, result = self._spider(cdp)
 
         if result["logged_out"]:

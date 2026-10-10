@@ -128,21 +128,57 @@ def _port_in_use(port: int) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def kill_stray_chrome() -> None:
+def kill_stray_chrome(keep_ports=()) -> None:
     """Kill every Chrome process left from a crashed run (container only).
 
     Runs ONCE per cycle in main.py BEFORE any board starts: with boards in
     parallel, a per-board `pkill -f chrome` would kill the other boards'
     browsers. Stale profile locks are cleared per launch (clean_locks).
+    keep_ports: CDP ports of boards still waiting for a person from an earlier
+    cycle; their Chrome (its whole process group) is spared.
     """
     from config import KILL_CHROME_ON_START
     if not KILL_CHROME_ON_START:
         return
     logger.info("[browser] Killing stray Chrome processes...")
-    try:
-        subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=10)
-    except Exception:
-        pass
+    if not keep_ports:
+        try:
+            subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=10)
+        except Exception:
+            pass
+        return
+    for pid in _stray_chrome_pids(_chrome_processes(), keep_ports):
+        try:
+            os.kill(pid, signal.SIGTERM)  # what pkill sends
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _chrome_processes() -> dict[int, tuple[int, str]]:
+    """{pid: (process group, command line)} of every process whose command
+    line contains "chrome" (what `pkill -f chrome` matches), except us."""
+    found = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as handle:
+                cmdline = handle.read().replace(b"\0", b" ").decode(errors="replace")
+            if "chrome" in cmdline:
+                found[int(entry)] = (os.getpgid(int(entry)), cmdline)
+        except (OSError, ProcessLookupError):
+            continue
+    return found
+
+
+def _stray_chrome_pids(processes: dict[int, tuple[int, str]], keep_ports) -> list[int]:
+    """Chrome processes to kill: all except the process groups of the browsers
+    listening on keep_ports. A browser leads its own group (launch_cdp_chrome
+    starts it in a new session); its renderer, GPU and utility processes share
+    the group but not the port flag."""
+    flags = {f"--remote-debugging-port={port}" for port in keep_ports}
+    kept = {group for group, cmdline in processes.values() if flags & set(cmdline.split())}
+    return sorted(pid for pid, (group, _cmdline) in processes.items() if group not in kept)
 
 
 def chrome_args(chrome: str, profile_dir: str, port: int, headless: bool = False,
