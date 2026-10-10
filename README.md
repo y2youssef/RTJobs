@@ -1,11 +1,11 @@
 # RTJobs
 
-Headful job-board scraper (LinkedIn + Wuzzuf + Indeed) that runs on a schedule in Docker, persists jobs to SQLite (no cap — all jobs retained via `seen_ids` dedupe), and notifies you on Telegram — jobs on one channel, failures on a separate alert channel. Boards can be toggled via env (`LINKEDIN_ENABLED`, `WUZZUF_ENABLED`, `INDEED_ENABLED`).
+Headful job-board scraper (LinkedIn + Wuzzuf + Indeed + NaukriGulf) that runs every 3 minutes in Docker, persists jobs to SQLite (no cap — all jobs retained via `seen_ids` dedupe), classifies each cycle's new jobs into job families and posts them to per-family Telegram channels, with failures on a separate alert channel. Boards run in parallel and can be toggled via env (`LINKEDIN_ENABLED`, `WUZZUF_ENABLED`, `INDEED_ENABLED`, `NAUKRIGULF_ENABLED`).
 
 ## Architecture
 
 ```
-main.py                  orchestrator: runs every enabled board
+main.py                  orchestrator: one cycle = every enabled board in parallel child processes
 config.py                single source of truth (env vars)
 core/
   db.py                  SQLite: jobs, seen_ids, runs, login_state
@@ -16,12 +16,17 @@ core/
   telegram.py            job notifications + failure alerts
   markup.py              sanitized HTML snapshots for selector debugging
   login_state.py         retry/cooldown/profile-wipe logic
+  board_budget.py        per-board time budget (waits for a person excluded)
+  scrape_health.py       parser checks + alert rules (confirm twice, flapping, recovery note)
   human.py               human-like delays
 boards/
   base.py                JobBoard interface (add new sites here)
   linkedin/              login state machine + scrapling Spider
   wuzzuf/                Cloudflare-protected SSR scraper (solve_cloudflare)
   indeed/                email-code login + embedded JSON scraper
+  naukrigulf/             Akamai-protected; jobs from the page's own search API response
+scripts/deploy.sh        the only way to deploy: test gate in the image, quiet switch, auto-rollback
+docker/chrome-base.Dockerfile  pinned Chrome base image (scripts/build_chrome_base.sh)
 markup/enrichment/       prompt, JSON schema, taxonomy, evaluation fixtures
 markup/<site>/
   selectors.json         ALL CSS selectors per site (edit here, not in code)
@@ -48,7 +53,7 @@ LINKEDIN_PASSWORD=...
 # Optional (defaults shown)
 HEADLESS=false                # docker sets this via compose
 DATA_DIR=.                    # docker: /data
-CHROME_DEBUG_PORT=9222        # remote debugging port (LinkedIn; Wuzzuf 9223, Indeed 9224)
+CHROME_DEBUG_PORT=9222        # remote debugging port (LinkedIn; Wuzzuf 9223, Indeed 9224, NaukriGulf 9225)
 CHECKPOINT_WAIT_SECONDS=600   # pause for manual 2FA/checkpoint solve
 MAX_LOGIN_RETRIES=3
 LINKEDIN_NAVIGATION_RETRY_DELAY_SECONDS=3 # three navigation attempts, with a pause
@@ -58,12 +63,16 @@ LINKEDIN_DETAIL_RECOVERY_TIMEOUT_SECONDS=20 # one longer detail retry
 MAX_SNAPSHOTS_PER_KIND=20
 KILL_CHROME_ON_START=false    # docker: true
 HEALTHCHECK_URL=              # optional external heartbeat sent by monitor only when pipeline checks pass
+SCRAPE_INTERVAL_MINUTES=3     # must divide 60
+BOARDS_PARALLEL=true          # boards run concurrently inside one cycle
+BOARD_TIME_BUDGET_SECONDS=300 # per board, excluding waits for you (2FA / emailed code)
 LINKEDIN_ENABLED=true
 WUZZUF_ENABLED=true
 INDEED_ENABLED=false          # see INDEED.md
+NAUKRIGULF_ENABLED=false      # see NAUKRIGULF.md
 INDEED_EMAIL=                 # Indeed sign-in address (emailed codes); see INDEED.md "Login" section
 LOG_LEVEL=INFO                # debug/info/warning/error
-LOG_FILE=./logs/rtjobs.log    # docker: /data/logs/rtjobs.log (rotating 5×5MB); empty to disable file log
+LOG_FILE=./logs/rtjobs.log    # docker: /data/logs/scraper.log (+ scraper-<board>.log per board); empty to disable
 ```
 
 ## 2. Run locally (visible browser window)
@@ -76,30 +85,46 @@ scrapling install                     # browser deps, if first time
 python main.py
 ```
 
-A Chrome window opens, logs you in (or reuses the saved profile), scrapes
-LinkedIn, saves jobs, and posts new ones to Telegram.
+A Chrome window opens per board, logs in (or reuses the saved profile), scrapes
+the first search page, saves jobs, and posts new ones to Telegram.
 
 ## 3. Run in Docker (scheduled, headful via Xvfb)
 
+First install (the image builds on a local, pinned Chrome base image):
+
 ```bash
-docker compose up -d          # builds image, starts ofelia scheduler
+scripts/build_chrome_base.sh                       # once per machine; tags rtjobs-chrome-base:<version>
+docker compose --profile enrichment up -d --build  # ALL services (plain `up` skips the workers)
 docker compose logs -f scraper
 ```
 
+Every later deploy goes through **`scripts/deploy.sh`** (from a clean `main`
+that matches GitHub). It builds a candidate image, runs the full offline suite,
+the scrapling contract check and a Chrome version check inside it with
+networking off, switches only between cycles, then watches two cycles and rolls
+back by itself if a board never succeeds, a worker is down or cycles stall.
+`scripts/deploy.sh --dry-run` stops after the tests (any branch). Chrome and
+Python packages are pinned (`docker/chrome-base.Dockerfile`, `requirements.lock`);
+upgrading Chrome is a deliberate `scripts/build_chrome_base.sh --upgrade`.
+Records of every deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 - `ofelia` triggers the scraper container **every 3 minutes** (set
-  `SCRAPE_INTERVAL_MINUTES` in `.env`; it must divide 60). Each run scrapes the
-  first search page of every board. A run that outlasts the interval starts
-  the next one immediately instead of waiting for the following tick.
-- Chrome runs headful on a virtual display (`xvfb-run`) with remote debugging
-  enabled.
-- Persisted in named volumes: `chrome_profile` (login session), `scraper_data`
-  (SQLite DB). `./markup` on the host is bind-mounted for offline debugging.
+  `SCRAPE_INTERVAL_MINUTES` in `.env`; it must divide 60). Each cycle runs all
+  boards in parallel (own Chrome, profile and CDP port each) and reads the
+  first search page of every board; its new jobs go to the classifier in one
+  request. A cycle that outlasts the interval starts the next one immediately.
+- Chrome runs headful on a virtual display (Xvfb, started by
+  `docker/entrypoint.sh`) with remote debugging enabled.
+- Persisted in named volumes: `chrome_profile` (LinkedIn), `wuzzuf_profile`,
+  `indeed_profile`, `naukrigulf_profile` (sessions/clearance cookies),
+  `scraper_data` (SQLite DB, logs). `./markup` on the host is bind-mounted.
 
 ## 4. Step into the live scrape (CDP)
 
 While a run is in progress (Chrome is only up during a run):
 
-1. Open `http://localhost:9222` in a browser, or `chrome://inspect` → "Remote
+1. Open `http://localhost:9222` (LinkedIn; Wuzzuf 9223, Indeed 9224,
+   NaukriGulf 9225) in a browser, or `chrome://inspect` → "Remote
    target" (or any CDP client — `curl http://localhost:9222/json/version` to
    confirm). Works because `docker-compose.yaml` uses `network_mode: host` — the
    container's loopback **is** the host's loopback (a bridge `ports:` mapping
@@ -123,7 +148,9 @@ rendering flags.
 
 ## 5. LinkedIn login behavior
 
-- **Session active** (redirect to `/feed`) → scrape directly.
+- Runs go **straight to the search page**; it proves the session (no login/authwall
+  path and the `li_at` cookie). Only a signed-out landing runs the login check
+  below, then the search again.
 - **Login page** → human-like fill (EN + AR), verify routing after submit.
 - **Checkpoint/2FA** → alert sent to the failure channel; the run **pauses up
   to `CHECKPOINT_WAIT_SECONDS`** so you can solve it via CDP; solved → resumes.
@@ -149,9 +176,13 @@ include the failed check, counts/sample IDs and a sanitized snapshot path when
 available. These symptoms can indicate markup changes, incomplete loading or
 access problems; the alert does not assume a particular cause.
 
-The `scrape_health` table records each check and its last successful alert.
-One unresolved issue produces one alert across scheduled runs; failed alert
-delivery is retried. A successful observation resets that check so a recurrence
+The `scrape_health` table records each check and its last successful alert
+(`scrape_health_episodes` holds the alert-rule state). A check alerts once it
+fails **twice in a row**, or three times within an hour (flapping); a single
+failure that recovers on the next run stays silent. One unresolved issue
+produces one alert across scheduled runs; failed alert delivery is retried, and
+if an episode ends before any alert got through, one "failed and recovered"
+note is sent. A successful observation resets that check so a recurrence
 alerts again. Recovery is logged. All-seen pages are normal; optional salary or
 recruiter fields are not required. The checks detect common silent failures,
 not every possible semantic change in a site's data.
@@ -198,26 +229,29 @@ marked seen so they're never re-scraped.
 
 ## 9. Adding a new board
 
-1. Subclass `JobBoard` in `boards/<site>/` with `name`, `run()` returning the
-   number of new jobs saved (job dicts follow the shape `source, external_id,
-   title, company, posted_at, description, link, extra` and are persisted via
-   `boards.base.persist_jobs`). `main.py` handles delivery after Chrome closes,
-   or delegates it to the optional enrichment worker.
-2. Create `markup/<site>/selectors.json`.
-3. Register in `BOARDS` in `main.py`; keep `enabled = False` until ready.
+1. Subclass `JobBoard` in `boards/<site>/`: set `name`, `title`, `enabled`,
+   `profile_dir` and a unique `port_offset` (CDP port), and implement
+   `scrape(cdp, record)`; `run()` owns the run row, Chrome and error handling.
+   Job dicts follow the shape `source, external_id, title, company, posted_at,
+   description, link, extra` and are saved as soon as each is finished
+   (`save_now` / the spider's `on_job`), then counted by `finish_scrape`.
+2. Create `markup/<site>/selectors.json` and a public-fields-only fixture plus
+   offline checks in `scripts/verify_offline.py`.
+3. Register in `BOARDS` in `main.py` (and the monitor's board list, a profile
+   volume in compose); keep it disabled by default until a supervised run.
 
 Wuzzuf notes: it's Cloudflare-protected, so its spider uses
 `solve_cloudflare=True` (first request solves the challenge automatically)
 and a persistent profile (`wuzzufprofile/`) so the clearance cookie survives
-between runs. Pages are server-side rendered — 15 jobs per page, pagination
-via `start=N` (page index). Job descriptions/requirements and exact
+between runs. Pages are server-side rendered — 15 jobs per page; only the
+first page is read (`start=0`). Job descriptions/requirements and exact
 timestamps come from the embedded SSR state (`window.Wuzzuf`), parsed
 straight out of the page HTML (`_extract_state`) and merged over the
 DOM-extracted card data. Reference markup: `markup/wuzzuf/wazzuf_guide.txt`.
 
 ## 10. Logs
 
-Logs go to **both** `stdout` (visible via `docker logs scraper` / `docker logs ofelia`) and a **rotating file** at `LOG_FILE` (default `DATA_DIR/logs/rtjobs.log` → in Docker `scraper_data:/data` → `/data/logs/rtjobs.log`). Keeps 5×5 MB. Set `LOG_LEVEL=DEBUG` for verbose, `LOG_FILE=""` to disable file logging. Locally check `./logs/rtjobs.log`.
+Logs go to **both** `stdout` (visible via `docker logs rtjobs` / `docker logs ofelia`) and a **rotating file** at `LOG_FILE` (in Docker `/data/logs/scraper.log` in the `scraper_data` volume, plus one `scraper-<board>.log` per board and `enrichment.log` / `delivery.log` / `monitor.log` for the workers). Keeps 5×5 MB each. Set `LOG_LEVEL=DEBUG` for verbose, `LOG_FILE=""` to disable file logging. Locally check `./logs/rtjobs.log`.
 
 ## Optional Egypt classification and enrichment
 
@@ -243,7 +277,7 @@ Completing a scrape cycle immediately notifies the browser-free classifier,
 which sends every uncached new job together in **one OpenRouter completion request**, without a
 25-job cutoff. Results are validated together and saved individually alongside
 the raw jobs. Committed results immediately notify a separate delivery worker,
-which posts ready jobs while the classifier handles later cycles. The scraper keeps its six-minute schedule.
+which posts ready jobs while the classifier handles later cycles. The scraper keeps its three-minute schedule.
 See [the pipeline guide](docs/PIPELINE.md) for timing, retries and local monitoring.
 
 Two caches reduce cost:
@@ -309,8 +343,8 @@ posting permissions and sends no messages.
 Add the configured bot to each channel as an administrator with Post Messages.
 `chat not found` can mean the bot cannot access the channel or its ID is wrong.
 
-Deploy between scraper runs: stop the scheduler and let an active scraper finish
-before recreating it, then restart the scheduler. A browser-free worker can also
+Deploy with `scripts/deploy.sh` (section 3): it waits for a moment between
+cycles before recreating the services. A browser-free worker can also
 run once with `python -m core.enrichment_worker --once --no-send` for inspection.
 Do not enable the scraper's flag without starting the worker, or new jobs will
 wait in the queue. Stop both workers and recreate the scraper with the flag false
@@ -329,7 +363,8 @@ Worker logs expose `result_cache`, input/cached/write token counts and cost;
 
 Run `.venv/bin/python scripts/verify_offline.py` for fixture-based parsing,
 SQLite migration, caching, routing, retries and browser-patch checks. It uses
-temporary databases, dummy credentials and blocks HTTP requests. Analytics-only
+temporary databases, dummy credentials and blocks HTTP requests; `scripts/deploy.sh`
+runs it inside every candidate image before a deploy. Analytics-only
 packages are in `requirements-analysis.txt`; the scraper image installs only
 `requirements.txt`.
 
@@ -348,9 +383,9 @@ profiles and sent no test Telegram messages. Wuzzuf's separate requirements are
 now retained; LinkedIn keeps available employer industry/about text; Indeed
 supports current `_rootProps` pages and merges salary/location/employment data
 even when a description is already present. Existing historical omissions need
-a separate backfill. Indeed still reads one search page and fetches at most ten
-new detail pages per run; skipped or failed details retain their cards with
-`description_truncated=true` and a `detail_status` reason. This is not exhaustive
+a separate backfill. Indeed reads one search page and fetches the detail page
+of every new card (the old ten-per-run cap is gone); failed details retain their
+cards with `description_truncated=true` and a `detail_status` reason. This is not exhaustive
 coverage of every listing on either site.
 
 Deployment on 2026-10-03: parser fixes and error alerts are running in Docker;
@@ -366,7 +401,7 @@ passing a channel check alone does not activate them.
 |---|---|
 | `curl localhost:9222` fails (no run) | Expected — Chrome only runs during a scrape. Wait for next `ofelia` tick (`docker logs ofelia`) or `docker start rtjobs`. Inside a run it should respond. |
 | `curl localhost:9222` fails (mid-run) | Check `docker logs scraper` for Chrome launch errors; verify `network_mode: host` and that port 9222 is free. |
-| `xvfb-run` hangs forever | Missing `xauth` package or PID 1 `SIGUSR1` issue — image installs `xauth` and `docker-compose.yaml` sets `init: true` (tini). See `AGENTS.md:6a-b`. |
+| Runs left `running` after `docker stop` | Keep `docker/entrypoint.sh` (starts Xvfb, then `exec`s Python) and `init: true`; `xvfb-run` swallowed SIGTERM (AGENTS.md:6a-b). |
 | Chrome SIGTRAP/crash on start | No writable `HOME` — image sets `HOME=/home/scraper` (AGENTS.md:6c). |
 | `profile appears to be in use` | Stale `Singleton*` lock after kill — `KILL_CHROME_ON_START=true` + `core/browser.py:launch_cdp_chrome(clean_locks=True)` clears it (AGENTS.md:6d). Also handled by `init: true` + SIGTERM grace. |
 | Times in DB off by hours | Stored timestamps are UTC by design (only `posted_at` is local). Compose still pins `TZ=Africa/Cairo` for `posted_at`, alert wording and the budget day (AGENTS.md:6e). |
@@ -375,7 +410,7 @@ passing a channel check alone does not activate them.
 | Stuck "blocked" state / "LinkedIn rejected the login credentials" | Fix `.env` and recreate the scraper (`docker compose up -d scraper`) — changed credentials unlock automatically. Otherwise `docker compose run --rm scraper python main.py --reset-login` clears retries, cooldown and the credential lock. |
 | Host run: Chrome exits with "Failed to move to new namespace" | The host blocks unprivileged user namespaces (e.g. Ubuntu 24.04 AppArmor), so Chrome's sandbox cannot start. Set `CHROME_NO_SANDBOX=true` in `.env` (default `auto` only disables it inside Docker). |
 | Chrome won't start in container | Profile lock from a crash: `KILL_CHROME_ON_START=true` handles it; otherwise `docker compose down && docker compose up -d`. |
-| Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead and heavy resources are dropped (see `core/browser.py:patch_no_load_wait`). |
+| Tab spinner spins forever / `Page.goto: Timeout ... waiting until "load"` | scrapling waits for the browser `load` event, which LinkedIn never fires (hanging tracker/CDN resources — your normal Chrome hides this via extensions/adblock). Already handled: navigations wait for `domcontentloaded` instead (see `core/browser.py:patch_no_load_wait`). Never block resources on LinkedIn: request interception turns Chrome's HTTP cache off (AGENTS.md Gotchas #11). |
 | Login keeps failing after site change | Check the newest `markup/linkedin/snapshots/login_failure/*.html` and update `selectors.json`. |
 | Silent "runs stopped" (no jobs, no alerts) | Check the local `monitor` service. For host-wide outages, configure an external service through `HEALTHCHECK_URL`; the monitor pings only when pipeline checks pass. |
 | Full `jobs` table growing large | By design now uncapped (no `MAX_JOBS` prune) — use `DELETE FROM jobs WHERE ...` or rotate `rtjobs.db` volume if needed. `seen_ids` keeps dedupe forever. |
